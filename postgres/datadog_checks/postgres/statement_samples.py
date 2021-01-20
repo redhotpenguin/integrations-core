@@ -110,7 +110,7 @@ class PostgresStatementSamples(object):
 
         statsd.histogram("dd.postgres.get_new_pg_stat_activity.time", (time.time() - start_time) * 1000,
                               tags=self._tags)
-        statsd.histogram("dd.dusan.postgres.get_new_pg_stat_activity.rows", len(rows), tags=self._tags)
+        statsd.histogram("dd.postgres.get_new_pg_stat_activity.rows", len(rows), tags=self._tags)
 
         for r in rows:
             if r['query'] and r['datname']:
