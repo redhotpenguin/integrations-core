@@ -6,6 +6,7 @@ from contextlib import closing
 
 import pymysql
 from cachetools import TTLCache
+from datadog import statsd
 from datadog_checks.base import is_affirmative
 from datadog_checks.base.log import get_check_logger
 from datadog_checks.base.utils.db.sql import compute_exec_plan_signature, compute_sql_signature, \
@@ -209,8 +210,8 @@ class MySQLStatementSamples(object):
             self._checkpoint = max(r['timer_start'] for r in rows)
             cursor.execute('SET @@SESSION.sql_notes = 0')
             tags = ["table:%s".format(events_statements_table)] + self._tags
-            self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
-            self._check.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
+            statsd.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
+            statsd.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
             return rows
 
     def _filter_valid_statement_rows(self, rows):
@@ -375,20 +376,19 @@ class MySQLStatementSamples(object):
         rows = self._get_new_events_statements(events_statements_table, self._events_statements_row_limit)
         events = self._collect_plans_for_statements(rows)
         submit_statement_sample_events(events)
-        self._check.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000,
-                              tags=self._tags)
-        self._check.gauge("dd.mysql.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
-                          tags=self._tags)
+        statsd.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000, tags=self._tags)
+        statsd.gauge("dd.mysql.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
+                     tags=self._tags)
 
     def _attempt_explain_safe(self, sql_text, schema):
         start_time = time.time()
         with closing(self._get_db_connection().cursor()) as cursor:
             try:
                 plan = self._attempt_explain(cursor, sql_text, schema)
-                self._check.histogram("dd.mysql.run_explain.time", (time.time() - start_time) * 1000, tags=self._tags)
+                statsd.histogram("dd.mysql.run_explain.time", (time.time() - start_time) * 1000, tags=self._tags)
                 return plan
             except Exception:
-                self._check.count("dd.mysql.run_explain.error", 1, tags=self._tags)
+                statsd.increment("dd.mysql.run_explain.error", tags=self._tags)
                 self._log.exception("failed to run explain on query %s", sql_text)
 
     def _attempt_explain(self, cursor, statement, schema):
