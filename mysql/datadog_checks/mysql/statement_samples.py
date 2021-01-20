@@ -87,7 +87,7 @@ class MySQLStatementSamples(object):
         self._collection_loop_future = None
         self._rate_limiter = ConstantRateLimiter(1)
         self._config = config
-        self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', True))
+        self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
         self._auto_enable_events_statements_consumers = is_affirmative(
             self._config.statement_samples_config.get('auto_enable_events_statements_consumers', False))

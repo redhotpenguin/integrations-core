@@ -51,7 +51,7 @@ class PostgresStatementSamples(object):
         self._tags = None
         self._tags_str = None
         self._service = "postgres"
-        self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', True))
+        self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
         self._rate_limiter = ConstantRateLimiter(
             self._config.statement_samples_config.get('collections_per_second', 10))
