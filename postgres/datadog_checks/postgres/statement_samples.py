@@ -1,23 +1,22 @@
 import json
 import os
 import time
+from concurrent.futures.thread import ThreadPoolExecutor
 
 import psycopg2
 from cachetools import TTLCache
-from datadog_checks.base import is_affirmative
-from datadog_checks.base.log import get_check_logger
+from datadog import statsd
 
 try:
     import datadog_agent
 except ImportError:
     from ..stubs import datadog_agent
 
-from concurrent.futures.thread import ThreadPoolExecutor
-
-from datadog import statsd
-from datadog_checks.base.utils.db.sql import submit_statement_sample_events, compute_exec_plan_signature, \
-    compute_sql_signature
+from datadog_checks.base import is_affirmative
+from datadog_checks.base.log import get_check_logger
+from datadog_checks.base.utils.db.sql import compute_exec_plan_signature, compute_sql_signature
 from datadog_checks.base.utils.db.utils import ConstantRateLimiter
+from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 
 VALID_EXPLAIN_STATEMENTS = frozenset({'select', 'table', 'delete', 'insert', 'replace', 'update'})
 
@@ -109,7 +108,7 @@ class PostgresStatementSamples(object):
             rows = cursor.fetchall()
 
         statsd.histogram("dd.postgres.get_new_pg_stat_activity.time", (time.time() - start_time) * 1000,
-                              tags=self._tags)
+                         tags=self._tags)
         statsd.histogram("dd.postgres.get_new_pg_stat_activity.rows", len(rows), tags=self._tags)
 
         for r in rows:
@@ -135,12 +134,12 @@ class PostgresStatementSamples(object):
 
         samples = self._get_new_pg_stat_activity(self._check.db)
         events = self._explain_pg_stat_activity(self._check.db, samples)
-        submit_statement_sample_events(events)
+        statement_samples_client.submit_events(events)
 
         elapsed_ms = (time.time() - start_time) * 1000
         statsd.histogram("dd.postgres.collect_statement_samples.time", elapsed_ms, tags=self._tags)
         statsd.gauge("dd.postgres.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
-                          tags=self._tags)
+                     tags=self._tags)
 
     def _can_obfuscate_statement(self, statement):
         if statement == '<insufficient privilege>':
@@ -173,7 +172,7 @@ class PostgresStatementSamples(object):
                 )
                 result = cursor.fetchone()
                 statsd.histogram("dd.postgres.run_explain.time", (time.time() - start_time) * 1000,
-                                      tags=self._tags)
+                                 tags=self._tags)
             except psycopg2.errors.UndefinedFunction:
                 self._log.warn(
                     "Failed to collect execution plan due to undefined explain_function: %s.",

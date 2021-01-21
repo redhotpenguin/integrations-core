@@ -7,16 +7,17 @@ from contextlib import closing
 import pymysql
 from cachetools import TTLCache
 from datadog import statsd
-from datadog_checks.base import is_affirmative
-from datadog_checks.base.log import get_check_logger
-from datadog_checks.base.utils.db.sql import compute_exec_plan_signature, compute_sql_signature, \
-    submit_statement_sample_events
-from datadog_checks.base.utils.db.utils import ConstantRateLimiter
 
 try:
     import datadog_agent
 except ImportError:
     from ..stubs import datadog_agent
+
+from datadog_checks.base import is_affirmative
+from datadog_checks.base.log import get_check_logger
+from datadog_checks.base.utils.db.sql import compute_exec_plan_signature, compute_sql_signature
+from datadog_checks.base.utils.db.utils import ConstantRateLimiter
+from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 
 VALID_EXPLAIN_STATEMENTS = frozenset({'select', 'table', 'delete', 'insert', 'replace', 'update'})
 
@@ -375,7 +376,7 @@ class MySQLStatementSamples(object):
         start_time = time.time()
         rows = self._get_new_events_statements(events_statements_table, self._events_statements_row_limit)
         events = self._collect_plans_for_statements(rows)
-        submit_statement_sample_events(events)
+        statement_samples_client.submit_events(events)
         statsd.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000, tags=self._tags)
         statsd.gauge("dd.mysql.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
                      tags=self._tags)
