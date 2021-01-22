@@ -125,13 +125,15 @@ class MySQLStatementSamples(object):
         :param tags:
         :return:
         """
+        if not self._enabled:
+            return
         self._tags = tags
         self._tags_str = ','.join(tags)
         for t in self._tags:
             if t.startswith('service:'):
                 self._service = t[len('service:'):]
         self._last_check_run = time.time()
-        if not self._run_sync:
+        if self._run_sync:
             self._log.debug("running statement sampler synchronously")
             self._collect_statement_samples()
         elif self._collection_loop_future is None or not self._collection_loop_future.running():
@@ -170,7 +172,7 @@ class MySQLStatementSamples(object):
                    sql_text,
                    IFNULL(digest_text, sql_text) AS digest_text,
                    timer_start,
-                   UNIX_TIMESTAMP()-(select VARIABLE_VALUE from information_schema.global_status
+                   UNIX_TIMESTAMP()-(select VARIABLE_VALUE from performance_schema.global_status
                             where VARIABLE_NAME='UPTIME')+timer_end*1e-12 as timer_end_time_s,
                    MAX(timer_wait) / 1000 AS max_timer_wait_ns,
                    lock_time / 1000 AS lock_time_ns,
@@ -203,6 +205,7 @@ class MySQLStatementSamples(object):
         with closing(self._get_db_connection().cursor(pymysql.cursors.DictCursor)) as cursor:
             params = ('statement/%', 'EXPLAIN %', self._checkpoint, row_limit)
             self._log.debug("running query: " + query, *params)
+            cursor.execute("SET sql_mode=(SELECT REPLACE(@@sql_mode, 'ONLY_FULL_GROUP_BY', ''))")
             cursor.execute(query, params)
             rows = cursor.fetchall()
             if not rows:

@@ -252,6 +252,18 @@ def test_statement_metrics(aggregator, instance_complex):
         )
 
 
+@pytest.mark.integration
+@pytest.mark.usefixtures('dd_environment')
+def test_statement_samples(aggregator, instance_complex):
+    config = copy.deepcopy(instance_complex)
+    config['statement_samples'] = {
+        'enabled': True,
+        'run_sync': True
+    }
+    mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
+    mysql_check.check(config)
+
+
 def _test_optional_metrics(aggregator, optional_metrics, at_least):
     """
     Check optional metrics - there should be at least `at_least` matches
