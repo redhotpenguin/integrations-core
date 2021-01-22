@@ -67,6 +67,9 @@ class DatadogAgentStub(object):
     def obfuscate_sql(self, query):
         return query
 
+    def obfuscate_sql_exec_plan(self, plan, normalize=False):
+        return plan
+
 
 # Use the stub as a singleton
 datadog_agent = DatadogAgentStub()

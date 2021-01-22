@@ -1,15 +1,16 @@
 # (C) Datadog, Inc. 2010-present
 # All rights reserved
 # Licensed under Simplified BSD License (see LICENSE)
+import json
+import re
 import socket
 
 import mock
 import psycopg2
 import pytest
-from semver import VersionInfo
-
 from datadog_checks.postgres import PostgreSql
 from datadog_checks.postgres.util import PartialFormatter, fmt
+from semver import VersionInfo
 
 from .common import DB_NAME, HOST, PORT, POSTGRES_VERSION, check_bgw_metrics, check_common_metrics
 from .utils import requires_over_10
@@ -263,6 +264,28 @@ def test_statement_metrics(aggregator, integration_check, pg_instance):
 
     for name in STATEMENT_METRICS:
         aggregator.assert_metric(name, count=1, tags=expected_tags)
+
+
+def test_statement_samples(integration_check, pg_instance):
+    from datadog_checks.base.utils.db.statement_samples import statement_samples_client
+
+    pg_instance['deep_database_monitoring'] = True
+
+    check = integration_check(pg_instance)
+    check._connect()
+    check.statement_samples._collect_statement_samples()
+
+    # check for the one query we are certain to collect a sample for as it is the query that the check itself makes
+    # to collect samples
+    def _matches_query(query):
+        s = re.sub('\s+', ' ', query or '').strip()
+        return s.startswith("SELECT * FROM pg_stat_activity WHERE datname = 'datadog_test'")
+
+    matching = [e for e in statement_samples_client._events if _matches_query(e['db']['statement'])]
+    assert len(matching) > 0, "should have collected an event for the pg_stat_activity query"
+    event = matching[0]
+    assert event['db']['plan']['definition'] is not None, "missing execution plan"
+    assert 'Plan' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
 
 def assert_state_clean(check):
