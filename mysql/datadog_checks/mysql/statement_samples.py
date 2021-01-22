@@ -1,5 +1,4 @@
 import json
-import os
 import time
 from concurrent.futures.thread import ThreadPoolExecutor
 from contextlib import closing
@@ -90,6 +89,7 @@ class MySQLStatementSamples(object):
         self._config = config
         self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
+        self._run_sync = is_affirmative(self._config.statement_samples_config.get('run_sync', False))
         self._auto_enable_events_statements_consumers = is_affirmative(
             self._config.statement_samples_config.get('auto_enable_events_statements_consumers', False))
         self._collections_per_second = self._config.statement_samples_config.get('collections_per_second', -1)
@@ -131,7 +131,7 @@ class MySQLStatementSamples(object):
             if t.startswith('service:'):
                 self._service = t[len('service:'):]
         self._last_check_run = time.time()
-        if not is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_ASYNC', "true")):
+        if not self._run_sync:
             self._log.debug("running statement sampler synchronously")
             self._collect_statement_samples()
         elif self._collection_loop_future is None or not self._collection_loop_future.running():
