@@ -60,7 +60,7 @@ class PostgresStatementSamples(object):
             # assuming ~60 bytes per entry (query & plan signature, key hash, 4 pointers (ordered dict), expiry time)
             # total size: 10k * 60 = 0.6 Mb
             maxsize=self._config.statement_samples_config.get('seen_samples_cache_maxsize', 10000),
-            ttl=60 * 60 / self._config.statement_samples_config.get('samples_per_hour_per_query', 30)
+            ttl=60 * 60 / self._config.statement_samples_config.get('samples_per_hour_per_query', 15)
         )
         self._explain_function = self._config.statement_samples_config.get('explain_function',
                                                                            'public.explain_statement')
