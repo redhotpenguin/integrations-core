@@ -278,7 +278,7 @@ def test_statement_samples(integration_check, pg_instance):
     # check for the one query we are certain to collect a sample for as it is the query that the check itself makes
     # to collect samples
     def _matches_query(query):
-        s = re.sub('\s+', ' ', query or '').strip()
+        s = re.sub(r'\s+', ' ', query or '').strip()
         return s.startswith("SELECT * FROM pg_stat_activity WHERE datname = 'datadog_test'")
 
     matching = [e for e in statement_samples_client._events if _matches_query(e['db']['statement'])]

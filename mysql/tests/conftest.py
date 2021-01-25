@@ -151,9 +151,16 @@ def version_metadata():
     }
 
 
+def _init_consumers(conn):
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE performance_schema.setup_consumers SET enabled = 'YES' WHERE name = 'events_statements_history_long'")
+
+
 def init_master():
     conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
     _add_dog_user(conn)
+    _init_consumers(conn)
 
 
 def init_slave():

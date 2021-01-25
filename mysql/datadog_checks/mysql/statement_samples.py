@@ -193,7 +193,7 @@ class MySQLStatementSamples(object):
               FROM performance_schema.{}
              WHERE sql_text IS NOT NULL
                AND event_name like %s
-               AND digest_text NOT LIKE %s
+               AND (digest_text is NULL OR digest_text NOT LIKE %s)
                AND timer_start > %s
           GROUP BY digest
           ORDER BY timer_wait DESC
@@ -241,7 +241,7 @@ class MySQLStatementSamples(object):
             num_sent += 1
 
         if num_truncated > 0:
-            self._log.warn(
+            self._log.warning(
                 'Unable to collect %d/%d statement samples due to truncated SQL text. Consider raising '
                 '`performance_schema_max_sql_text_length` to capture these queries.',
                 num_truncated,
@@ -339,7 +339,7 @@ class MySQLStatementSamples(object):
         for table in self._preferred_events_statements_tables:
             if table not in enabled_consumers:
                 if not self._auto_enable_events_statements_consumers:
-                    self._log.debug("performance_schema consumer for table %s not enabled")
+                    self._log.debug("performance_schema consumer for table %s not enabled", table)
                     continue
                 if not self._performance_schema_enable_consumer(table):
                     continue
@@ -429,7 +429,7 @@ class MySQLStatementSamples(object):
             if e.args[0] in PYMYSQL_NON_RETRYABLE_ERRORS:
                 self._collection_strategy_cache[strategy_cache_key] = explain_strategy_none
             self._log.debug(
-                'Cannot collect execution plan because %s schema could not be accessed: %s, statement: %s',
+                'Failed to collect execution plan because %s schema could not be accessed: %s, statement: %s',
                 schema,
                 e.args,
                 obfuscated_statement,
@@ -456,7 +456,7 @@ class MySQLStatementSamples(object):
                 if e.args[0] in PYMYSQL_NON_RETRYABLE_ERRORS:
                     self._collection_strategy_cache[strategy_cache_key] = explain_strategy_none
                 self._log.debug(
-                    'Failed to collect statement with strategy %s, error: %s, statement: %s',
+                    'Failed to collect execution plan with strategy %s, error: %s, statement: %s',
                     strategy,
                     e.args,
                     obfuscated_statement,
