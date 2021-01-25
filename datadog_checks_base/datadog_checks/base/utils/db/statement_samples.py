@@ -108,8 +108,8 @@ def _to_logs_event(e):
 
 class StatementSamplesClient:
     def __init__(self):
-        endpoints = _load_event_endpoints_from_config("database_monitoring_config", default_dbm_url)
-        if datadog_agent.get_config('database_monitoring_config.double_write_to_logs'):
+        endpoints = _load_event_endpoints_from_config("database_monitoring", default_dbm_url)
+        if datadog_agent.get_config('database_monitoring.double_write_to_logs'):
             LOGGER.debug("DBM double writing to logs enabled")
             endpoints.extend(_load_event_endpoints_from_config("logs_config", default_logs_url))
         self._endpoints = endpoints
