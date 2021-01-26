@@ -3,7 +3,6 @@ import decimal
 import itertools
 import json
 import logging
-import socket
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
