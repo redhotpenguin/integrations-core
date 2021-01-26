@@ -92,20 +92,25 @@ class ConstantRateLimiter:
         self.last_event = time.time()
 
 
-def resolve_db_host(host):
+def resolve_db_host(db_host):
     agent_hostname = datadog_agent.get_hostname()
-    if not host or host in {'localhost', '127.0.0.1'}:
+    if not db_host or db_host in {'localhost', '127.0.0.1'}:
         return agent_hostname
+
     try:
-        host_ip = socket.gethostbyname(host)
-        if host_ip == socket.gethostbyname(agent_hostname):
-            # it's an alias to the agent host, so best returned the agent host as detected by the datadog_agent
-            # as that is more likely to match the true agent host and therefore inherit the correct metadata
-            return agent_hostname
-        # agent is talking to an external database host
-        return host
+        host_ip = socket.gethostbyname(db_host)
     except socket.gaierror as e:
-        # unix domain socket or an invalid hostname
+        # could be connecting via a unix domain socket
         LOGGER.debug("failed to resolve DB host '%s' due to socket.gaierror(%s). falling back to agent hostname: %s",
-                     host, e, agent_hostname)
+                     db_host, e, agent_hostname)
         return agent_hostname
+
+    try:
+        agent_host_ip = socket.gethostbyname(agent_hostname)
+        if agent_host_ip == host_ip:
+            return agent_hostname
+    except socket.gaierror as e:
+        LOGGER.debug("failed to resolve agent host '%s' due to socket.gaierror(%s). using DB host: %s",
+                     agent_hostname, e, db_host)
+
+    return db_host
