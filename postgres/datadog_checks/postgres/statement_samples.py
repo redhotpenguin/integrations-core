@@ -5,7 +5,6 @@ from concurrent.futures.thread import ThreadPoolExecutor
 
 import psycopg2
 from cachetools import TTLCache
-from datadog import statsd
 
 try:
     import datadog_agent
@@ -107,9 +106,9 @@ class PostgresStatementSamples(object):
                 cursor.execute(query, (self._config.dbname,))
             rows = cursor.fetchall()
 
-        statsd.histogram("dd.postgres.get_new_pg_stat_activity.time", (time.time() - start_time) * 1000,
-                         tags=self._tags)
-        statsd.histogram("dd.postgres.get_new_pg_stat_activity.rows", len(rows), tags=self._tags)
+        self._check.histogram("dd.postgres.get_new_pg_stat_activity.time", (time.time() - start_time) * 1000,
+                              tags=self._tags)
+        self._check.histogram("dd.postgres.get_new_pg_stat_activity.rows", len(rows), tags=self._tags)
 
         for r in rows:
             if r['query'] and r['datname']:
@@ -137,9 +136,9 @@ class PostgresStatementSamples(object):
         statement_samples_client.submit_events(events)
 
         elapsed_ms = (time.time() - start_time) * 1000
-        statsd.histogram("dd.postgres.collect_statement_samples.time", elapsed_ms, tags=self._tags)
-        statsd.gauge("dd.postgres.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
-                     tags=self._tags)
+        self._check.histogram("dd.postgres.collect_statement_samples.time", elapsed_ms, tags=self._tags)
+        self._check.gauge("dd.postgres.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
+                          tags=self._tags)
 
     def _can_obfuscate_statement(self, statement):
         if statement == '<insufficient privilege>':
@@ -171,18 +170,18 @@ class PostgresStatementSamples(object):
                     )
                 )
                 result = cursor.fetchone()
-                statsd.histogram("dd.postgres.run_explain.time", (time.time() - start_time) * 1000,
-                                 tags=self._tags)
+                self._check.histogram("dd.postgres.run_explain.time", (time.time() - start_time) * 1000,
+                                      tags=self._tags)
             except psycopg2.errors.UndefinedFunction:
                 self._log.warn(
                     "Failed to collect execution plan due to undefined explain_function: %s.",
                     self._explain_function,
                 )
-                statsd.increment("dd.postgres.run_explain.error", tags=self._tags)
+                self._check.count("dd.postgres.run_explain.error", 1, tags=self._tags)
                 return None
             except Exception as e:
                 self._log.error("failed to collect execution plan for query='%s'. (%s): %s", statement, type(e), e)
-                statsd.increment("dd.postgres.run_explain.error", tags=self._tags)
+                self._check.count("dd.postgres.run_explain.error", 1, tags=self._tags)
                 return None
         if not result or len(result) < 1 or len(result[0]) < 1:
             return None
