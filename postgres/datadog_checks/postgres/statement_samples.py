@@ -55,17 +55,22 @@ class PostgresStatementSamples(object):
         self._run_sync = is_affirmative(self._config.statement_samples_config.get('run_sync', False))
         self._rate_limiter = ConstantRateLimiter(
             self._config.statement_samples_config.get('collections_per_second', 10))
-        # cache for rate limiting unique samples ingested
-        # a sample is unique based on its (query_signature, plan_signature)
-        # TODO: should we have a another cache to rate limit the number of explains we run?
+        self._explain_function = self._config.statement_samples_config.get('explain_function',
+                                                                           'public.explain_statement')
+
+        # explained_statements_cache: limit how often we try to re-explain the same query
+        self._explained_statements_cache = TTLCache(
+            maxsize=self._config.statement_samples_config.get('explained_statements_cache_maxsize', 5000),
+            ttl=60 * 60 / self._config.statement_samples_config.get('explained_statements_per_hour_per_query', 60)
+        )
+
+        # seen_samples_cache: limit the ingestion rate per (query_signature, plan_signature)
         self._seen_samples_cache = TTLCache(
             # assuming ~60 bytes per entry (query & plan signature, key hash, 4 pointers (ordered dict), expiry time)
             # total size: 10k * 60 = 0.6 Mb
             maxsize=self._config.statement_samples_config.get('seen_samples_cache_maxsize', 10000),
             ttl=60 * 60 / self._config.statement_samples_config.get('samples_per_hour_per_query', 15)
         )
-        self._explain_function = self._config.statement_samples_config.get('explain_function',
-                                                                           'public.explain_statement')
 
     def run_sampler(self, tags):
         """
@@ -202,13 +207,18 @@ class PostgresStatementSamples(object):
                 self._log.exception("failed to obfuscate statement='%s'", original_statement)
                 continue
 
-            plan_dict = self._run_explain(db, original_statement)
+            # limit the rate of explains done to the database
+            query_signature = compute_sql_signature(obfuscated_statement)
+            if query_signature in self._explained_statements_cache:
+                continue
+            self._explained_statements_cache[query_signature] = True
 
             # Plans have several important signatures to tag events with. Note that for postgres, the
             # query_signature and resource_hash will be the same value.
             # - `plan_signature` - hash computed from the normalized JSON plan to group identical plan trees
             # - `resource_hash` - hash computed off the raw sql text to match apm resources
             # - `query_signature` - hash computed from the raw sql text to match query metrics
+            plan_dict = self._run_explain(db, original_statement)
             plan, normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None, None
             if plan_dict:
                 plan = json.dumps(plan_dict)
@@ -217,7 +227,6 @@ class PostgresStatementSamples(object):
                 plan_signature = compute_exec_plan_signature(normalized_plan)
                 plan_cost = (plan_dict.get('Plan', {}).get('Total Cost', 0.0) or 0.0)
 
-            query_signature = compute_sql_signature(obfuscated_statement)
             statement_plan_sig = (query_signature, plan_signature)
             if statement_plan_sig not in self._seen_samples_cache:
                 self._seen_samples_cache[statement_plan_sig] = True

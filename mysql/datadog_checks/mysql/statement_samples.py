@@ -109,11 +109,19 @@ class MySQLStatementSamples(object):
                     events_statements_table,
                     ', '.join(DEFAULT_EVENTS_STATEMENTS_RATE_LIMITS.keys()),
                 )
+
         self._collection_strategy_cache = TTLCache(
             maxsize=self._config.statement_samples_config.get('collection_strategy_cache_maxsize', 1000),
             ttl=self._config.statement_samples_config.get('collection_strategy_cache_ttl', 300)
         )
-        # TODO: should we have a another cache to rate limit the number of explains we run?
+
+        # explained_statements_cache: limit how often we try to re-explain the same query
+        self._explained_statements_cache = TTLCache(
+            maxsize=self._config.statement_samples_config.get('explained_statements_cache_maxsize', 5000),
+            ttl=60 * 60 / self._config.statement_samples_config.get('explained_statements_per_hour_per_query', 60)
+        )
+
+        # seen_samples_cache: limit the ingestion rate per (query_signature, plan_signature)
         self._seen_samples_cache = TTLCache(
             # assuming ~60 bytes per entry (query & plan signature, key hash, 4 pointers (ordered dict), expiry time)
             # total size: 10k * 60 = 0.6 Mb
@@ -256,6 +264,13 @@ class MySQLStatementSamples(object):
             # - `plan_signature` - hash computed from the normalized JSON plan to group identical plan trees
             # - `resource_hash` - hash computed off the raw sql text to match apm resources
             # - `query_signature` - hash computed from the digest text to match query metrics
+            obfuscated_statement = datadog_agent.obfuscate_sql(row['sql_text'])
+            query_signature = compute_sql_signature(datadog_agent.obfuscate_sql(row['digest_text']))
+            apm_resource_hash = compute_sql_signature(obfuscated_statement)
+            if query_signature in self._explained_statements_cache:
+                continue
+            self._explained_statements_cache[query_signature] = True
+
             normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None
             plan = self._attempt_explain_safe(row['sql_text'], row['current_schema'])
             if plan:
@@ -263,10 +278,6 @@ class MySQLStatementSamples(object):
                 obfuscated_plan = datadog_agent.obfuscate_sql_exec_plan(plan)
                 plan_signature = compute_exec_plan_signature(normalized_plan)
                 plan_cost = self._parse_execution_plan_cost(plan)
-
-            obfuscated_statement = datadog_agent.obfuscate_sql(row['sql_text'])
-            query_signature = compute_sql_signature(datadog_agent.obfuscate_sql(row['digest_text']))
-            apm_resource_hash = compute_sql_signature(obfuscated_statement)
 
             statement_plan_sig = (query_signature, plan_signature)
             if statement_plan_sig not in self._seen_samples_cache:
