@@ -119,7 +119,7 @@ class StatementSamplesClient:
         Submit the execution plan events to the event intake
         https://docs.datadoghq.com/api/v1/logs/#send-logs
         """
-
+        submitted_count = 0
         for chunk in _chunks(events, 100):
             for http, url in self._endpoints:
                 is_dbquery = 'dbquery' in url
@@ -131,10 +131,12 @@ class StatementSamplesClient:
                                      headers={'Content-Type': 'application/json'})
                     r.raise_for_status()
                     LOGGER.debug("submitted %s statement samples to %s", len(chunk), url)
+                    submitted_count += len(chunk)
                 except requests.HTTPError as e:
                     LOGGER.warning("failed to submit statement samples to %s: %s", url, e)
                 except Exception:
                     LOGGER.exception("failed to submit statement samples to %s", url)
+        return submitted_count
 
 
 class StubStatementSamplesClient:

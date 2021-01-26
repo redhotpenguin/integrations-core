@@ -391,9 +391,11 @@ class MySQLStatementSamples(object):
         start_time = time.time()
         rows = self._get_new_events_statements(events_statements_table, self._events_statements_row_limit)
         events = self._collect_plans_for_statements(rows)
-        statement_samples_client.submit_events(events)
+        submitted_count = statement_samples_client.submit_events(events)
         self._check.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000,
                               tags=self._tags)
+        self._check.count("dd.mysql.collect_statement_samples.events_submitted.count",
+                          submitted_count, tags=self._tags)
         self._check.gauge("dd.mysql.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
                           tags=self._tags)
 

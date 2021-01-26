@@ -141,12 +141,14 @@ class PostgresStatementSamples(object):
 
         samples = self._get_new_pg_stat_activity(self._check.db)
         events = self._explain_pg_stat_activity(self._check.db, samples)
-        statement_samples_client.submit_events(events)
+        submitted_count = statement_samples_client.submit_events(events)
 
         elapsed_ms = (time.time() - start_time) * 1000
         self._check.histogram("dd.postgres.collect_statement_samples.time", elapsed_ms, tags=self._tags)
         self._check.gauge("dd.postgres.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
                           tags=self._tags)
+        self._check.count("dd.postgres.collect_statement_samples.events_submitted.count",
+                          submitted_count, tags=self._tags)
 
     def _can_obfuscate_statement(self, statement):
         if statement == '<insufficient privilege>':
