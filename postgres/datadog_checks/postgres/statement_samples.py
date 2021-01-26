@@ -57,6 +57,7 @@ class PostgresStatementSamples(object):
             self._config.statement_samples_config.get('collections_per_second', 10))
         # cache for rate limiting unique samples ingested
         # a sample is unique based on its (query_signature, plan_signature)
+        # TODO: should we have a another cache to rate limit the number of explains we run?
         self._seen_samples_cache = TTLCache(
             # assuming ~60 bytes per entry (query & plan signature, key hash, 4 pointers (ordered dict), expiry time)
             # total size: 10k * 60 = 0.6 Mb
