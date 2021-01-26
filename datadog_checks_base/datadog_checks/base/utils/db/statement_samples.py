@@ -3,6 +3,7 @@ import decimal
 import itertools
 import json
 import logging
+import socket
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -28,7 +29,7 @@ class EventEncoder(json.JSONEncoder):
         return super(EventEncoder, self).default(o)
 
 
-def chunks(items, n):
+def _chunks(items, n):
     it = iter(items)
     while True:
         chunk = tuple(itertools.islice(it, n))
@@ -120,7 +121,7 @@ class StatementSamplesClient:
         https://docs.datadoghq.com/api/v1/logs/#send-logs
         """
 
-        for chunk in chunks(events, 100):
+        for chunk in _chunks(events, 100):
             for http, url in self._endpoints:
                 is_dbquery = 'dbquery' in url
                 try:

@@ -14,7 +14,7 @@ except ImportError:
 from datadog_checks.base import is_affirmative
 from datadog_checks.base.log import get_check_logger
 from datadog_checks.base.utils.db.sql import compute_exec_plan_signature, compute_sql_signature
-from datadog_checks.base.utils.db.utils import ConstantRateLimiter
+from datadog_checks.base.utils.db.utils import ConstantRateLimiter, resolve_db_host
 from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 
 VALID_EXPLAIN_STATEMENTS = frozenset({'select', 'table', 'delete', 'insert', 'replace', 'update'})
@@ -49,6 +49,7 @@ class PostgresStatementSamples(object):
         self._tags = None
         self._tags_str = None
         self._service = "postgres"
+        self._db_hostname = resolve_db_host(self._config.host)
         self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
         self._rate_limiter = ConstantRateLimiter(
@@ -221,8 +222,7 @@ class PostgresStatementSamples(object):
                 event = {
                     # the timestamp for activity events is the time at which they were collected
                     "timestamp": time.time() * 1000,
-                    # TODO: if "localhost" then use agent hostname instead
-                    "host": self._config.host,
+                    "host": self._db_hostname,
                     "service": self._service,
                     "ddsource": "postgres",
                     "ddtags": self._tags_str,
