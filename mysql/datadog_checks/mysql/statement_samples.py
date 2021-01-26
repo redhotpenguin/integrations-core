@@ -133,7 +133,7 @@ class MySQLStatementSamples(object):
             if t.startswith('service:'):
                 self._service = t[len('service:'):]
         self._last_check_run = time.time()
-        if self._run_sync:
+        if self._run_sync or is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_RUN_SYNC', "false")):
             self._log.debug("running statement sampler synchronously")
             self._collect_statement_samples()
         elif self._collection_loop_future is None or not self._collection_loop_future.running():

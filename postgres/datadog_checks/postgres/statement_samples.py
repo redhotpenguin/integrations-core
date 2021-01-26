@@ -52,6 +52,7 @@ class PostgresStatementSamples(object):
         self._db_hostname = resolve_db_host(self._config.host)
         self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
+        self._run_sync = is_affirmative(self._config.statement_samples_config.get('run_sync', False))
         self._rate_limiter = ConstantRateLimiter(
             self._config.statement_samples_config.get('collections_per_second', 10))
         # cache for rate limiting unique samples ingested
@@ -81,7 +82,7 @@ class PostgresStatementSamples(object):
                 self._service = t[len('service:'):]
         # store the last check run time so we can detect when the check has stopped running
         self._last_check_run = time.time()
-        if not is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_ASYNC', "true")):
+        if self._run_sync or is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_RUN_SYNC', "false")):
             self._log.debug("running statement sampler synchronously")
             self._collect_statement_samples()
         elif self._collection_loop_future is None or not self._collection_loop_future.running():
