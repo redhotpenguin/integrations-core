@@ -104,7 +104,8 @@ def resolve_db_host(host):
             return agent_hostname
         # agent is talking to an external database host
         return host
-    except socket.gaierror:
+    except socket.gaierror as e:
         # unix domain socket or an invalid hostname
-        LOGGER.debug("failed to resolve DB host: %s. falling back to agent hostname: %s", host, agent_hostname)
+        LOGGER.debug("failed to resolve DB host '%s' due to socket.gaierror(%s). falling back to agent hostname: %s",
+                     host, e, agent_hostname)
         return agent_hostname
