@@ -102,6 +102,7 @@ class PostgresStatementSamples(object):
         SELECT * FROM {pg_stat_activity_view}
         WHERE datname = %s
         AND coalesce(TRIM(query), '') != ''
+        AND query_start is not Null
         """.format(
             pg_stat_activity_view=self._config.pg_stat_activity_view
         )
@@ -132,6 +133,7 @@ class PostgresStatementSamples(object):
                 self._collect_statement_samples()
         except Exception:
             self._log.exception("statement sample collection loop failure")
+            self._check.count("dd.postgres.collect_statement_samples.loop_failure", 1, tags=self._tags)
 
     def _collect_statement_samples(self):
         self._rate_limiter.sleep()

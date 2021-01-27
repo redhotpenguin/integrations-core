@@ -174,6 +174,7 @@ class MySQLStatementSamples(object):
                 self._collect_statement_samples()
         except Exception:
             self._log.exception("mysql statement sampler collection loop failure")
+            self._check.count("dd.mysql.collect_statement_samples.loop_failure", 1, tags=self._tags)
 
     def _get_new_events_statements(self, events_statements_table, row_limit):
         start = time.time()
