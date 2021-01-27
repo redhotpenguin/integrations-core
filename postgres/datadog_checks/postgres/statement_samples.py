@@ -151,7 +151,7 @@ class PostgresStatementSamples(object):
                           tags=self._tags)
         self._check.gauge("dd.postgres.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
                           tags=self._tags)
-        self._check.gauge("dd.mysql.collect_statement_samples.explained_statements_cache.len",
+        self._check.gauge("dd.postgres.collect_statement_samples.explained_statements_cache.len",
                           len(self._explained_statements_cache), tags=self._tags)
 
     def _can_obfuscate_statement(self, statement):
