@@ -398,6 +398,8 @@ class MySQLStatementSamples(object):
                           submitted_count, tags=self._tags)
         self._check.gauge("dd.mysql.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
                           tags=self._tags)
+        self._check.gauge("dd.mysql.collect_statement_samples.explained_statements_cache.len",
+                          len(self._explained_statements_cache), tags=self._tags)
 
     def _attempt_explain_safe(self, sql_text, schema):
         start_time = time.time()
