@@ -269,7 +269,14 @@ class MySQLStatementSamples(object):
             # - `plan_signature` - hash computed from the normalized JSON plan to group identical plan trees
             # - `resource_hash` - hash computed off the raw sql text to match apm resources
             # - `query_signature` - hash computed from the digest text to match query metrics
-            obfuscated_statement = datadog_agent.obfuscate_sql(row['sql_text'])
+
+            try:
+                obfuscated_statement = datadog_agent.obfuscate_sql(row['sql_text'])
+            except Exception:
+                self._log.debug("failed to obfuscate statement: %s", row['sql_text'])
+                self._check.count("dd.mysql.statement_samples.error", 1, tags=self._tags + ["error:sql-obfuscate"])
+                continue
+
             query_signature = compute_sql_signature(datadog_agent.obfuscate_sql(row['digest_text']))
             apm_resource_hash = compute_sql_signature(obfuscated_statement)
             if query_signature in self._explained_statements_cache:
