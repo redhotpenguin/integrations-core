@@ -156,6 +156,8 @@ class PostgresStatementSamples(object):
     def _can_obfuscate_statement(self, statement):
         if statement == '<insufficient privilege>':
             self._log.warn("Insufficient privilege to collect statement.")
+            self._check.count("dd.postgres.statement_samples.error", 1,
+                              tags=self._tags + ["error:insufficient-privilege"])
             return False
         if statement.startswith('SELECT {}'.format(self._explain_function)):
             return False
@@ -190,11 +192,13 @@ class PostgresStatementSamples(object):
                     "Failed to collect execution plan due to undefined explain_function: %s.",
                     self._explain_function,
                 )
-                self._check.count("dd.postgres.run_explain.error", 1, tags=self._tags)
+                self._check.count("dd.postgres.statement_samples.error", 1,
+                                  tags=self._tags + ["error:explain-undefined-function"])
                 return None
             except Exception as e:
                 self._log.error("failed to collect execution plan for query='%s'. (%s): %s", statement, type(e), e)
-                self._check.count("dd.postgres.run_explain.error", 1, tags=self._tags)
+                self._check.count("dd.postgres.statement_samples.error", 1,
+                                  tags=self._tags + ["error:explain-{}".format(type(e))])
                 return None
         if not result or len(result) < 1 or len(result[0]) < 1:
             return None

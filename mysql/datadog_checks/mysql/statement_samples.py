@@ -172,9 +172,10 @@ class MySQLStatementSamples(object):
                     self._log.info("stopping mysql statement sampler collection loop due to check inactivity")
                     break
                 self._collect_statement_samples()
-        except Exception:
+        except Exception as e:
             self._log.exception("mysql statement sampler collection loop failure")
-            self._check.count("dd.mysql.collect_statement_samples.loop_failure", 1, tags=self._tags)
+            self._check.count("dd.mysql.statement_samples.error", 1,
+                              tags=self._tags + ["error:collection-loop-failure-{}".format(type(e))])
 
     def _get_new_events_statements(self, events_statements_table, row_limit):
         start = time.time()
@@ -260,6 +261,7 @@ class MySQLStatementSamples(object):
                 num_truncated,
                 num_truncated + num_sent,
             )
+            self._check.count("dd.mysql.statement_samples.error", 1, tags=self._tags + ["error:truncated-sql-text"])
 
     def _collect_plans_for_statements(self, rows):
         for row in self._filter_valid_statement_rows(rows):
@@ -411,8 +413,9 @@ class MySQLStatementSamples(object):
                 plan = self._attempt_explain(cursor, sql_text, schema)
                 self._check.histogram("dd.mysql.run_explain.time", (time.time() - start_time) * 1000, tags=self._tags)
                 return plan
-            except Exception:
-                self._check.count("dd.mysql.run_explain.error", 1, tags=self._tags)
+            except Exception as e:
+                self._check.count("dd.mysql.statement_samples.error", 1,
+                                  tags=self._tags + ["error:explain-{}".format(type(e))])
                 self._log.exception("failed to run explain on query %s", sql_text)
 
     def _attempt_explain(self, cursor, statement, schema):
