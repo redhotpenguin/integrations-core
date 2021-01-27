@@ -131,9 +131,10 @@ class PostgresStatementSamples(object):
                     self._log.info("sampler collection_loop stopping due to check inactivity")
                     break
                 self._collect_statement_samples()
-        except Exception:
+        except Exception as e:
             self._log.exception("statement sample collection loop failure")
-            self._check.count("dd.postgres.collect_statement_samples.loop_failure", 1, tags=self._tags)
+            self._check.count("dd.postgres.statement_samples.error", 1,
+                              tags=self._tags + ["error:collection-loop-failure-{}".format(type(e))])
 
     def _collect_statement_samples(self):
         self._rate_limiter.sleep()
