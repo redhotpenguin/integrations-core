@@ -31,10 +31,10 @@ EVENTS_STATEMENTS_PREFERRED_TABLES = [
 # default sampling settings for events_statements_* tables
 # rate limit is in samples/second
 # {table -> rate-limit}
-DEFAULT_EVENTS_STATEMENTS_RATE_LIMITS = {
+DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND = {
     'events_statements_history_long': 1 / 10,
-    'events_statements_history': 1,
-    'events_statements_current': 10,
+    'events_statements_history': 1 / 5,
+    'events_statements_current': 1,
 }
 
 # columns from events_statements_summary tables which correspond to attributes common to all databases and are
@@ -100,14 +100,14 @@ class MySQLStatementSamples(object):
         self._preferred_events_statements_tables = EVENTS_STATEMENTS_PREFERRED_TABLES
         events_statements_table = self._config.statement_samples_config.get('events_statements_table', None)
         if events_statements_table:
-            if events_statements_table in DEFAULT_EVENTS_STATEMENTS_RATE_LIMITS:
+            if events_statements_table in DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND:
                 self._log.info("using configured events_statements_table: %s", events_statements_table)
                 self._preferred_events_statements_tables = [events_statements_table]
             else:
                 self._log.warning(
                     "invalid events_statements_table: %s. must be one of %s",
                     events_statements_table,
-                    ', '.join(DEFAULT_EVENTS_STATEMENTS_RATE_LIMITS.keys()),
+                    ', '.join(DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND.keys()),
                 )
 
         self._collection_strategy_cache = TTLCache(
@@ -361,7 +361,7 @@ class MySQLStatementSamples(object):
                 self._log.debug("no statements found in %s", table)
                 continue
             if rate_limit < 0:
-                rate_limit = DEFAULT_EVENTS_STATEMENTS_RATE_LIMITS[table]
+                rate_limit = DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND[table]
             events_statements_table = table
             break
 

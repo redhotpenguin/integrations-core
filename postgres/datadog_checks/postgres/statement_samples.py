@@ -53,8 +53,7 @@ class PostgresStatementSamples(object):
         self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
         self._run_sync = is_affirmative(self._config.statement_samples_config.get('run_sync', False))
-        self._rate_limiter = ConstantRateLimiter(
-            self._config.statement_samples_config.get('collections_per_second', 10))
+        self._rate_limiter = ConstantRateLimiter(self._config.statement_samples_config.get('collections_per_second', 1))
         self._explain_function = self._config.statement_samples_config.get('explain_function',
                                                                            'public.explain_statement')
 
