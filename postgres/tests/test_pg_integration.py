@@ -268,12 +268,14 @@ def test_statement_metrics(aggregator, integration_check, pg_instance):
 
 def test_statement_samples(integration_check, pg_instance):
     from datadog_checks.base.utils.db.statement_samples import statement_samples_client
-
     pg_instance['deep_database_monitoring'] = True
-
+    pg_instance['statement_samples'] = {
+        'enabled': True,
+        'run_sync': True
+    }
     check = integration_check(pg_instance)
     check._connect()
-    check.statement_samples._collect_statement_samples()
+    check.check(pg_instance)
 
     # check for the one query we are certain to collect a sample for as it is the query that the check itself makes
     # to collect samples
