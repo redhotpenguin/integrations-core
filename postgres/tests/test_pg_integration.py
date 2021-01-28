@@ -266,22 +266,27 @@ def test_statement_metrics(aggregator, integration_check, pg_instance):
         aggregator.assert_metric(name, count=1, tags=expected_tags)
 
 
-def test_statement_samples(integration_check, pg_instance):
+@pytest.mark.parametrize("pg_stat_activity_view", ["pg_stat_activity", "public.get_pg_stat_activity()"])
+def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view):
     from datadog_checks.base.utils.db.statement_samples import statement_samples_client
     pg_instance['deep_database_monitoring'] = True
+    pg_instance['pg_stat_activity_view'] = pg_stat_activity_view
     pg_instance['statement_samples'] = {
         'enabled': True,
         'run_sync': True
     }
     check = integration_check(pg_instance)
     check._connect()
+    # clear out any samples kept from previous runs
+    statement_samples_client._events = []
+
     check.check(pg_instance)
 
     # check for the one query we are certain to collect a sample for as it is the query that the check itself makes
     # to collect samples
     def _matches_query(query):
         s = re.sub(r'\s+', ' ', query or '').strip()
-        return s.startswith("SELECT * FROM pg_stat_activity WHERE datname = 'datadog_test'")
+        return s.startswith("SELECT * FROM {} WHERE datname = 'datadog_test'".format(pg_stat_activity_view))
 
     matching = [e for e in statement_samples_client._events if _matches_query(e['db']['statement'])]
     assert len(matching) > 0, "should have collected an event for the pg_stat_activity query"
