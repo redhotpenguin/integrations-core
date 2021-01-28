@@ -295,6 +295,16 @@ def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view
     assert 'Plan' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
 
+# TODO: test with pg_monitor permission
+def test_statement_samples_invalid_config(integration_check, pg_instance):
+    pg_instance['deep_database_monitoring'] = True
+    pg_instance['statement_samples'] = {
+        'explained_statements_cache_maxsize': "not-a-number",
+    }
+    with pytest.raises(ValueError):
+        integration_check(pg_instance)
+
+
 def assert_state_clean(check):
     assert check.metrics_cache.instance_metrics is None
     assert check.metrics_cache.bgw_metrics is None
