@@ -130,6 +130,7 @@ class PostgresStatementSamples(object):
             while True:
                 if time.time() - self._last_check_run > self._config.min_collection_interval * 2:
                     self._log.info("sampler collection_loop stopping due to check inactivity")
+                    self._check.count("dd.postgres.statement_samples.collection_loop_inactive_stop", 1, tags=self._tags)
                     break
                 self._collect_statement_samples()
         except Exception as e:

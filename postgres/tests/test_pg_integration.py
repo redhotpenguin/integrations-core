@@ -9,9 +9,9 @@ import time
 import mock
 import psycopg2
 import pytest
+from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 from datadog_checks.postgres import PostgreSql
 from datadog_checks.postgres.util import PartialFormatter, fmt
-from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 from semver import VersionInfo
 
 from .common import DB_NAME, HOST, PORT, POSTGRES_VERSION, check_bgw_metrics, check_common_metrics
@@ -308,7 +308,7 @@ def test_statement_samples_invalid_activity_view(aggregator, integration_check, 
         check.check(pg_instance)
 
     # run asynchronously, loop will crash the first time it tries to run as the table doesn't exist
-    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': False, 'collections_per_second': 10}
+    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': False}
     check = integration_check(pg_instance)
     check._connect()
     check.check(pg_instance)
@@ -316,6 +316,18 @@ def test_statement_samples_invalid_activity_view(aggregator, integration_check, 
         time.sleep(0.1)
 
     aggregator.assert_metric_has_tag_prefix("dd.postgres.statement_samples.error", "error:collection-loop-failure-")
+
+
+def test_statement_samples_collection_loop_inactive_stop(aggregator, integration_check, pg_instance):
+    pg_instance['deep_database_monitoring'] = True
+    pg_instance['min_collection_interval'] = 1
+    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': False, 'collections_per_second': 1}
+    check = integration_check(pg_instance)
+    check._connect()
+    check.check(pg_instance)
+    while check.statement_samples._collection_loop_future.running():
+        time.sleep(0.1)
+    aggregator.assert_metric("dd.postgres.statement_samples.collection_loop_inactive_stop")
 
 
 # TODO: test with pg_monitor permission
