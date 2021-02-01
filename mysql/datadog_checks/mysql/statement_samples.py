@@ -170,6 +170,7 @@ class MySQLStatementSamples(object):
             while True:
                 if time.time() - self._last_check_run > self._config.min_collection_interval * 2:
                     self._log.info("stopping mysql statement sampler collection loop due to check inactivity")
+                    self._check.count("dd.mysql.statement_samples.collection_loop_inactive_stop", 1, tags=self._tags)
                     break
                 self._collect_statement_samples()
         except Exception as e:

@@ -5,19 +5,19 @@ import copy
 import json
 import re
 import subprocess
+import time
 from contextlib import closing
 from os import environ
 
 import mock
 import psutil
 import pytest
-from pkg_resources import parse_version
-
 from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 from datadog_checks.base.utils.platform import Platform
 from datadog_checks.dev.utils import get_metadata_metrics
 from datadog_checks.mysql import MySql, statements
 from datadog_checks.mysql.version_utils import get_version
+from pkg_resources import parse_version
 
 from . import common, tags, variables
 from .common import MYSQL_VERSION_PARSED
@@ -279,6 +279,19 @@ def test_statement_samples(instance_complex, events_statements_table):
     event = matching[0]
     assert event['db']['plan']['definition'] is not None, "missing execution plan"
     assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures('dd_environment')
+def test_statement_samples_collection_loop_inactive_stop(aggregator, instance_complex):
+    config = copy.deepcopy(instance_complex)
+    config['min_collection_interval'] = 1
+    config['statement_samples'] = {'enabled': True, 'run_sync': False}
+    mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
+    mysql_check.check(config)
+    while mysql_check._statement_samples._collection_loop_future.running():
+        time.sleep(0.1)
+    aggregator.assert_metric("dd.mysql.statement_samples.collection_loop_inactive_stop")
 
 
 def _test_optional_metrics(aggregator, optional_metrics, at_least):

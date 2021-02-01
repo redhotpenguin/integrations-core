@@ -293,6 +293,18 @@ def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view
     assert 'Plan' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
 
+def test_statement_samples_collection_loop_inactive_stop(aggregator, integration_check, pg_instance):
+    pg_instance['deep_database_monitoring'] = True
+    pg_instance['min_collection_interval'] = 1
+    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': False, 'collections_per_second': 1}
+    check = integration_check(pg_instance)
+    check._connect()
+    check.check(pg_instance)
+    while check.statement_samples._collection_loop_future.running():
+        time.sleep(0.1)
+    aggregator.assert_metric("dd.postgres.statement_samples.collection_loop_inactive_stop")
+
+
 def test_statement_samples_invalid_activity_view(aggregator, integration_check, pg_instance):
     pg_instance['deep_database_monitoring'] = True
     pg_instance['pg_stat_activity_view'] = "fake_view"
@@ -313,18 +325,6 @@ def test_statement_samples_invalid_activity_view(aggregator, integration_check, 
         time.sleep(0.1)
 
     aggregator.assert_metric_has_tag_prefix("dd.postgres.statement_samples.error", "error:collection-loop-failure-")
-
-
-def test_statement_samples_collection_loop_inactive_stop(aggregator, integration_check, pg_instance):
-    pg_instance['deep_database_monitoring'] = True
-    pg_instance['min_collection_interval'] = 1
-    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': False, 'collections_per_second': 1}
-    check = integration_check(pg_instance)
-    check._connect()
-    check.check(pg_instance)
-    while check.statement_samples._collection_loop_future.running():
-        time.sleep(0.1)
-    aggregator.assert_metric("dd.postgres.statement_samples.collection_loop_inactive_stop")
 
 
 # TODO: test with pg_monitor permission
