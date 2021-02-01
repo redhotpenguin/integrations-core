@@ -53,9 +53,10 @@ class PostgresStatementSamples(object):
         self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
         self._run_sync = is_affirmative(self._config.statement_samples_config.get('run_sync', False))
-        self._rate_limiter = ConstantRateLimiter(self._config.statement_samples_config.get('collections_per_second', 1))
+        self._rate_limiter = ConstantRateLimiter(
+            float(self._config.statement_samples_config.get('collections_per_second', 1)))
         self._explain_function = self._config.statement_samples_config.get('explain_function',
-                                                                           'public.explain_statement')
+                                                                           'datadog.explain_statement')
 
         # explained_statements_cache: limit how often we try to re-explain the same query
         self._explained_statements_cache = TTLCache(
@@ -92,7 +93,7 @@ class PostgresStatementSamples(object):
             self._collect_statement_samples()
         elif self._collection_loop_future is None or not self._collection_loop_future.running():
             self._log.info("starting postgres statement sampler")
-            self._collection_loop_future = PostgresStatementSamples.executor.submit(self.collection_loop)
+            self._collection_loop_future = PostgresStatementSamples.executor.submit(self._collection_loop)
         else:
             self._log.debug("postgres statement sampler already running")
 
@@ -124,7 +125,7 @@ class PostgresStatementSamples(object):
                     self._activity_last_query_start = r['query_start']
                 yield r
 
-    def collection_loop(self):
+    def _collection_loop(self):
         try:
             while True:
                 if time.time() - self._last_check_run > self._config.min_collection_interval * 2:

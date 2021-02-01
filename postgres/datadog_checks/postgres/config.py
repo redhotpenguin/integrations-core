@@ -2,10 +2,9 @@
 # All rights reserved
 # Licensed under Simplified BSD License (see LICENSE)
 # https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-PARAMKEYWORDS
-from six import PY2, PY3, iteritems
-
 from datadog_checks.base import AgentCheck, ConfigurationError, is_affirmative
 from datadog_checks.base.utils.aws import rds_parse_tags_from_endpoint
+from six import PY2, PY3, iteritems
 
 SSL_MODES = {'disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'}
 TABLE_COUNT_LIMIT = 200

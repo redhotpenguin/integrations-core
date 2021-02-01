@@ -4,6 +4,7 @@
 import json
 import re
 import socket
+import time
 
 import mock
 import psycopg2
@@ -266,7 +267,7 @@ def test_statement_metrics(aggregator, integration_check, pg_instance):
         aggregator.assert_metric(name, count=1, tags=expected_tags)
 
 
-@pytest.mark.parametrize("pg_stat_activity_view", ["pg_stat_activity", "public.get_pg_stat_activity()"])
+@pytest.mark.parametrize("pg_stat_activity_view", ["pg_stat_activity", "datadog.pg_stat_activity()"])
 def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view):
     from datadog_checks.base.utils.db.statement_samples import statement_samples_client
     pg_instance['deep_database_monitoring'] = True
@@ -295,11 +296,38 @@ def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view
     assert 'Plan' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
 
-# TODO: test with pg_monitor permission
-def test_statement_samples_invalid_config(integration_check, pg_instance):
+def test_statement_samples_invalid_activity_view(aggregator, integration_check, pg_instance):
     pg_instance['deep_database_monitoring'] = True
+    pg_instance['pg_stat_activity_view'] = "fake_view"
+
+    # run synchronously, so we expect it to blow up right away
+    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': True}
+    check = integration_check(pg_instance)
+    check._connect()
+    with pytest.raises(psycopg2.errors.UndefinedTable):
+        check.check(pg_instance)
+
+    # run asynchronously, loop will crash the first time it tries to run as the table doesn't exist
+    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': False, 'collections_per_second': 10}
+    check = integration_check(pg_instance)
+    check._connect()
+    check.check(pg_instance)
+    while check.statement_samples._collection_loop_future.running():
+        time.sleep(0.1)
+
+    aggregator.assert_metric_has_tag_prefix("dd.postgres.statement_samples.error", "error:collection-loop-failure-")
+
+
+# TODO: test with pg_monitor permission
+@pytest.mark.parametrize("number_key", [
+    "explained_statements_cache_maxsize",
+    "explained_statements_per_hour_per_query",
+    "seen_samples_cache_maxsize",
+    "collections_per_second",
+])
+def test_statement_samples_config_invalid_number(integration_check, pg_instance, number_key):
     pg_instance['statement_samples'] = {
-        'explained_statements_cache_maxsize': "not-a-number",
+        number_key: "not-a-number",
     }
     with pytest.raises(ValueError):
         integration_check(pg_instance)
