@@ -11,6 +11,7 @@ import psycopg2
 import pytest
 from datadog_checks.postgres import PostgreSql
 from datadog_checks.postgres.util import PartialFormatter, fmt
+from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 from semver import VersionInfo
 
 from .common import DB_NAME, HOST, PORT, POSTGRES_VERSION, check_bgw_metrics, check_common_metrics
@@ -269,7 +270,6 @@ def test_statement_metrics(aggregator, integration_check, pg_instance):
 
 @pytest.mark.parametrize("pg_stat_activity_view", ["pg_stat_activity", "datadog.pg_stat_activity()"])
 def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view):
-    from datadog_checks.base.utils.db.statement_samples import statement_samples_client
     pg_instance['deep_database_monitoring'] = True
     pg_instance['pg_stat_activity_view'] = pg_stat_activity_view
     pg_instance['statement_samples'] = {
