@@ -272,10 +272,7 @@ def test_statement_metrics(aggregator, integration_check, pg_instance):
 def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view):
     pg_instance['deep_database_monitoring'] = True
     pg_instance['pg_stat_activity_view'] = pg_stat_activity_view
-    pg_instance['statement_samples'] = {
-        'enabled': True,
-        'run_sync': True
-    }
+    pg_instance['statement_samples'] = {'enabled': True, 'run_sync': True}
     check = integration_check(pg_instance)
     check._connect()
     # clear out any samples kept from previous runs
@@ -290,7 +287,7 @@ def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view
         return s.startswith("SELECT * FROM {} WHERE datname = 'datadog_test'".format(pg_stat_activity_view))
 
     matching = [e for e in statement_samples_client._events if _matches_query(e['db']['statement'])]
-    assert len(matching) > 0, "should have collected an event for the pg_stat_activity query"
+    assert len(matching) > 0, "should have collected an event"
     event = matching[0]
     assert event['db']['plan']['definition'] is not None, "missing execution plan"
     assert 'Plan' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"

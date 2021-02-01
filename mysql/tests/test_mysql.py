@@ -13,6 +13,7 @@ import psutil
 import pytest
 from pkg_resources import parse_version
 
+from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 from datadog_checks.base.utils.platform import Platform
 from datadog_checks.dev.utils import get_metadata_metrics
 from datadog_checks.mysql import MySql, statements
@@ -33,12 +34,12 @@ def test_minimal_config(aggregator, instance_basic):
 
     # Test metrics
     testable_metrics = (
-        variables.STATUS_VARS
-        + variables.VARIABLES_VARS
-        + variables.INNODB_VARS
-        + variables.BINLOG_VARS
-        + variables.SYSTEM_METRICS
-        + variables.SYNTHETIC_VARS
+            variables.STATUS_VARS
+            + variables.VARIABLES_VARS
+            + variables.INNODB_VARS
+            + variables.BINLOG_VARS
+            + variables.SYSTEM_METRICS
+            + variables.SYNTHETIC_VARS
     )
 
     for mname in testable_metrics:
@@ -67,13 +68,13 @@ def _assert_complex_config(aggregator):
     aggregator.assert_service_check('mysql.can_connect', status=MySql.OK, tags=tags.SC_TAGS, count=1)
     aggregator.assert_service_check('mysql.replication.slave_running', status=MySql.OK, tags=tags.SC_TAGS, at_least=1)
     testable_metrics = (
-        variables.STATUS_VARS
-        + variables.VARIABLES_VARS
-        + variables.INNODB_VARS
-        + variables.BINLOG_VARS
-        + variables.SYSTEM_METRICS
-        + variables.SCHEMA_VARS
-        + variables.SYNTHETIC_VARS
+            variables.STATUS_VARS
+            + variables.VARIABLES_VARS
+            + variables.INNODB_VARS
+            + variables.BINLOG_VARS
+            + variables.SYSTEM_METRICS
+            + variables.SCHEMA_VARS
+            + variables.SYNTHETIC_VARS
     )
 
     if MYSQL_VERSION_PARSED >= parse_version('5.6'):
@@ -111,10 +112,10 @@ def _assert_complex_config(aggregator):
 
     # test optional metrics
     optional_metrics = (
-        variables.OPTIONAL_REPLICATION_METRICS
-        + variables.OPTIONAL_INNODB_VARS
-        + variables.OPTIONAL_STATUS_VARS
-        + variables.OPTIONAL_STATUS_VARS_5_6_6
+            variables.OPTIONAL_REPLICATION_METRICS
+            + variables.OPTIONAL_INNODB_VARS
+            + variables.OPTIONAL_STATUS_VARS
+            + variables.OPTIONAL_STATUS_VARS_5_6_6
     )
     _test_optional_metrics(aggregator, optional_metrics, 1)
 
@@ -158,13 +159,13 @@ def test_complex_config_replica(aggregator, instance_complex):
     )
 
     testable_metrics = (
-        variables.STATUS_VARS
-        + variables.VARIABLES_VARS
-        + variables.INNODB_VARS
-        + variables.BINLOG_VARS
-        + variables.SYSTEM_METRICS
-        + variables.SCHEMA_VARS
-        + variables.SYNTHETIC_VARS
+            variables.STATUS_VARS
+            + variables.VARIABLES_VARS
+            + variables.INNODB_VARS
+            + variables.BINLOG_VARS
+            + variables.SYSTEM_METRICS
+            + variables.SCHEMA_VARS
+            + variables.SYNTHETIC_VARS
     )
 
     if MYSQL_VERSION_PARSED >= parse_version('5.6') and environ.get('MYSQL_FLAVOR') != 'mariadb':
@@ -195,10 +196,10 @@ def test_complex_config_replica(aggregator, instance_complex):
 
     # test optional metrics
     optional_metrics = (
-        variables.OPTIONAL_REPLICATION_METRICS
-        + variables.OPTIONAL_INNODB_VARS
-        + variables.OPTIONAL_STATUS_VARS
-        + variables.OPTIONAL_STATUS_VARS_5_6_6
+            variables.OPTIONAL_REPLICATION_METRICS
+            + variables.OPTIONAL_INNODB_VARS
+            + variables.OPTIONAL_STATUS_VARS
+            + variables.OPTIONAL_STATUS_VARS_5_6_6
     )
     _test_optional_metrics(aggregator, optional_metrics, 1)
 
@@ -245,25 +246,39 @@ def test_statement_metrics(aggregator, instance_complex):
         aggregator.assert_metric(
             name,
             tags=tags.SC_TAGS
-            + [
-                'query:{}'.format(QUERY_DIGEST_TEXT),
-                'query_signature:{}'.format(QUERY_SIGNATURE),
-                'digest:{}'.format(QUERY_DIGEST),
-            ],
+                 + [
+                     'query:{}'.format(QUERY_DIGEST_TEXT),
+                     'query_signature:{}'.format(QUERY_SIGNATURE),
+                     'digest:{}'.format(QUERY_DIGEST),
+                 ],
             count=1,
         )
 
 
 @pytest.mark.integration
 @pytest.mark.usefixtures('dd_environment')
-def test_statement_samples(aggregator, instance_complex):
+@pytest.mark.parametrize("events_statements_table", ["events_statements_current", "events_statements_history_long"])
+def test_statement_samples(instance_complex, events_statements_table):
     config = copy.deepcopy(instance_complex)
     config['statement_samples'] = {
         'enabled': True,
-        'run_sync': True
+        'run_sync': True,
+        'events_statements_table': events_statements_table
     }
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
     mysql_check.check(config)
+
+    # check for the one query we are certain to collect a sample for as it is the query that the check itself makes
+    # to collect samples
+    def _matches_query(query):
+        return re.match(".*FROM performance_schema.{}.*".format(events_statements_table),
+                        re.sub(r'\s+', ' ', query or '').strip())
+
+    matching = [e for e in statement_samples_client._events if _matches_query(e['db']['statement'])]
+    assert len(matching) > 0, "should have collected an event"
+    event = matching[0]
+    assert event['db']['plan']['definition'] is not None, "missing execution plan"
+    assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
 
 def _test_optional_metrics(aggregator, optional_metrics, at_least):
