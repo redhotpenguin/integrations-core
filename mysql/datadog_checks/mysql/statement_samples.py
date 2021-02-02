@@ -204,17 +204,22 @@ class MySQLStatementSamples(object):
                    sort_rows,
                    sort_scan,
                    no_index_used,
-                   no_good_index_used
-              FROM performance_schema.{}
-             WHERE sql_text IS NOT NULL
-               AND event_name like %s
-               AND (digest_text is NULL OR digest_text NOT LIKE %s)
-               AND timer_start > %s
-          GROUP BY digest
-          ORDER BY timer_wait DESC
-              LIMIT %s
+                   no_good_index_used,
+                   processlist_user,
+                   processlist_host,
+                   processlist_db
+                FROM performance_schema.{events_statements_table} as E
+                LEFT JOIN performance_schema.threads as T
+                ON E.thread_id = T.thread_id
+                WHERE sql_text IS NOT NULL
+                    AND event_name like %s
+                    AND (digest_text is NULL OR digest_text NOT LIKE %s)
+                    AND timer_start > %s
+            GROUP BY digest
+            ORDER BY timer_wait DESC
+            LIMIT %s
             """.format(
-            events_statements_table
+            events_statements_table=events_statements_table
         )
 
         with closing(self._get_db_connection().cursor(pymysql.cursors.DictCursor)) as cursor:
