@@ -414,17 +414,17 @@ class MySQLStatementSamples(object):
             self._rate_limiter = ConstantRateLimiter(rate_limit)
 
         start_time = time.time()
+        tags = self._tags + ["events_statements_table:{}".format(events_statements_table)]
         rows = self._get_new_events_statements(events_statements_table, self._events_statements_row_limit)
         events = self._collect_plans_for_statements(rows)
         submitted_count = statement_samples_client.submit_events(events)
-        self._check.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000,
-                              tags=self._tags)
+        self._check.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000, tags=tags)
         self._check.count("dd.mysql.collect_statement_samples.events_submitted.count",
-                          submitted_count, tags=self._tags)
+                          submitted_count, tags=tags)
         self._check.gauge("dd.mysql.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
-                          tags=self._tags)
+                          tags=tags)
         self._check.gauge("dd.mysql.collect_statement_samples.explained_statements_cache.len",
-                          len(self._explained_statements_cache), tags=self._tags)
+                          len(self._explained_statements_cache), tags=tags)
 
     def _attempt_explain_safe(self, sql_text, schema):
         start_time = time.time()
