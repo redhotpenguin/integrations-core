@@ -24,8 +24,12 @@ VALID_EXPLAIN_STATEMENTS = frozenset({'select', 'table', 'delete', 'insert', 're
 # preference
 EVENTS_STATEMENTS_PREFERRED_TABLES = [
     'events_statements_history_long',
-    'events_statements_history',
-    'events_statements_current'
+    'events_statements_current',
+    # events_statements_history is the lowest in preference because it keeps the history only as long as the thread
+    # exists, which means if an application uses only short-lived connections that execute a single query then we
+    # won't be able to catch any samples of it. By querying events_statements_current we at least guarantee we'll
+    # be able to catch queries from short-lived connections.
+    'events_statements_history'
 ]
 
 # default sampling settings for events_statements_* tables
@@ -33,9 +37,7 @@ EVENTS_STATEMENTS_PREFERRED_TABLES = [
 # {table -> rate-limit}
 DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND = {
     'events_statements_history_long': 1 / 10,
-    # TODO: should we even use this one? Statements only appear after they've ended, but all of them are removed
-    # after thread ends, so we would have no way to catch non-persistent connections that make only a single query
-    'events_statements_history': 1 / 5,
+    'events_statements_history': 1 / 10,
     'events_statements_current': 1,
 }
 
