@@ -47,22 +47,22 @@ def dd_environment(config_e2e):
         e2e_metadata = {'docker_volumes': ['{}:{}'.format(logs_host_path, logs_path)]}
 
         with docker_run(
-            os.path.join(common.HERE, 'compose', COMPOSE_FILE),
-            env_vars={
-                'MYSQL_DOCKER_REPO': _mysql_docker_repo(),
-                'MYSQL_PORT': str(common.PORT),
-                'MYSQL_SLAVE_PORT': str(common.SLAVE_PORT),
-                'MYSQL_CONF_PATH': _mysql_conf_path(),
-                'MYSQL_LOGS_HOST_PATH': logs_host_path,
-                'MYSQL_LOGS_PATH': logs_path,
-                'WAIT_FOR_IT_SCRIPT_PATH': _wait_for_it_script(),
-            },
-            conditions=[
-                WaitFor(init_master, wait=2),
-                WaitFor(init_slave, wait=2),
-                CheckDockerLogs('mysql-slave', ["ready for connections", "mariadb successfully initialized"]),
-                populate_database,
-            ],
+                os.path.join(common.HERE, 'compose', COMPOSE_FILE),
+                env_vars={
+                    'MYSQL_DOCKER_REPO': _mysql_docker_repo(),
+                    'MYSQL_PORT': str(common.PORT),
+                    'MYSQL_SLAVE_PORT': str(common.SLAVE_PORT),
+                    'MYSQL_CONF_PATH': _mysql_conf_path(),
+                    'MYSQL_LOGS_HOST_PATH': logs_host_path,
+                    'MYSQL_LOGS_PATH': logs_path,
+                    'WAIT_FOR_IT_SCRIPT_PATH': _wait_for_it_script(),
+                },
+                conditions=[
+                    WaitFor(init_master, wait=2),
+                    WaitFor(init_slave, wait=2),
+                    CheckDockerLogs('mysql-slave', ["ready for connections", "mariadb successfully initialized"]),
+                    populate_database,
+                ],
         ):
             yield config_e2e, e2e_metadata
 
@@ -179,6 +179,22 @@ def _add_dog_user(conn):
     cur.execute("GRANT SELECT ON performance_schema.* TO 'dog'@'%'")
 
 
+def _create_explain_function(conn, schema):
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE PROCEDURE {schema}.explain_statement(IN query TEXT)
+        SQL SECURITY DEFINER
+    BEGIN
+        SET @explain := CONCAT('EXPLAIN FORMAT=json ', query);
+        PREPARE stmt FROM @explain;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END;
+    """.format(schema=schema))
+    cur.execute("GRANT EXECUTE ON PROCEDURE {schema}.explain_statement to 'dog'@'%';".format(schema=schema))
+    cur.close()
+
+
 def populate_database():
     conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
 
@@ -191,6 +207,11 @@ def populate_database():
     cur.execute("INSERT INTO testdb.users (name,age) VALUES('Bob',20);")
     cur.execute("GRANT SELECT ON testdb.users TO 'dog'@'%';")
     cur.close()
+    _create_explain_function(conn, "testdb")
+
+
+def _setup_statement_sampling():
+    pass
 
 
 def _wait_for_it_script():
