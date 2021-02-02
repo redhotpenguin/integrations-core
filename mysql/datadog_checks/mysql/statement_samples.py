@@ -50,7 +50,9 @@ EVENTS_STATEMENTS_SAMPLE_EXCLUDE_KEYS = {
     'digest_text',
     'timer_end_time_s',
     'max_timer_wait_ns',
-    'timer_start'
+    'timer_start',
+    # included as network.client.ip
+    'processlist_host'
 }
 
 PYMYSQL_EXCEPTIONS = (pymysql.err.InternalError, pymysql.err.ProgrammingError)
@@ -307,8 +309,11 @@ class MySQLStatementSamples(object):
                     "ddsource": "mysql",
                     "ddtags": self._tags_str,
                     "duration": row['max_timer_wait_ns'],
-                    # Missing for now: network.client.{ip,port}
-                    # TODO: we might be able to join it in
+                    "network": {
+                        "client": {
+                            "ip": row.get('processlist_host', None),
+                        }
+                    },
                     "db": {
                         "instance": row['current_schema'],
                         "plan": {
