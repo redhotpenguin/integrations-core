@@ -257,7 +257,11 @@ def test_statement_metrics(aggregator, instance_complex):
 
 @pytest.mark.integration
 @pytest.mark.usefixtures('dd_environment')
-@pytest.mark.parametrize("events_statements_table", ["events_statements_current", "events_statements_history_long"])
+@pytest.mark.parametrize("events_statements_table", [
+    "events_statements_current",
+    "events_statements_history",
+    "events_statements_history_long"
+])
 def test_statement_samples(instance_complex, events_statements_table):
     config = copy.deepcopy(instance_complex)
     config['statement_samples'] = {
@@ -292,6 +296,17 @@ def test_statement_samples_collection_loop_inactive_stop(aggregator, instance_co
     while mysql_check._statement_samples._collection_loop_future.running():
         time.sleep(0.1)
     aggregator.assert_metric("dd.mysql.statement_samples.collection_loop_inactive_stop")
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures('dd_environment')
+def test_statement_samples_invalid_explain_procedure(aggregator, instance_complex):
+    config = copy.deepcopy(instance_complex)
+    config['min_collection_interval'] = 1
+    config['statement_samples'] = {'enabled': True, 'run_sync': True, 'explain_procedure': "hello"}
+    mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
+    mysql_check.check(config)
+    aggregator.assert_metric_has_tag_prefix("dd.mysql.statement_samples.error", "error:explain-")
 
 
 def _test_optional_metrics(aggregator, optional_metrics, at_least):

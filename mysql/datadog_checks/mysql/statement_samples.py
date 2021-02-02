@@ -471,6 +471,8 @@ class MySQLStatementSamples(object):
                 raise
             if e.args[0] in PYMYSQL_NON_RETRYABLE_ERRORS:
                 self._collection_strategy_cache[strategy_cache_key] = explain_strategy_none
+            self._check.count("dd.mysql.statement_samples.error", 1,
+                              tags=self._tags + ["error:explain-use-schema-{}".format(type(e))])
             self._log.debug(
                 'Failed to collect execution plan because %s schema could not be accessed: %s, statement: %s',
                 schema,
@@ -498,6 +500,8 @@ class MySQLStatementSamples(object):
                     raise
                 if e.args[0] in PYMYSQL_NON_RETRYABLE_ERRORS:
                     self._collection_strategy_cache[strategy_cache_key] = explain_strategy_none
+                self._check.count("dd.mysql.statement_samples.error", 1,
+                                  tags=self._tags + ["error:explain-attempt-{}-{}".format(strategy, type(e))])
                 self._log.debug(
                     'Failed to collect execution plan with strategy %s, error: %s, statement: %s',
                     strategy,
@@ -505,11 +509,6 @@ class MySQLStatementSamples(object):
                     obfuscated_statement,
                 )
                 continue
-
-        self._log.info(
-            'Cannot collect execution plan for statement (enable debug logs to log attempts): %s',
-            obfuscated_statement,
-        )
 
     def _use_schema(self, cursor, schema):
         """
