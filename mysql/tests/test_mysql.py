@@ -263,6 +263,7 @@ def test_statement_metrics(aggregator, instance_complex):
     "events_statements_history_long"
 ])
 def test_statement_samples(instance_complex, events_statements_table):
+    # try to collect a sample from all supported events_statements tables
     config = copy.deepcopy(instance_complex)
     config['statement_samples'] = {
         'enabled': True,
@@ -272,13 +273,12 @@ def test_statement_samples(instance_complex, events_statements_table):
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
     mysql_check.check(config)
 
-    # check for the one query we are certain to collect a sample for as it is the query that the check itself makes
-    # to collect samples
-    def _matches_query(query):
+    # the only sample we're guaranteed to catch is of the query to collect samples the check itself is making
+    def _matches(query):
         return re.match(".*FROM performance_schema.{}.*".format(events_statements_table),
                         re.sub(r'\s+', ' ', query or '').strip())
 
-    matching = [e for e in statement_samples_client._events if _matches_query(e['db']['statement'])]
+    matching = [e for e in statement_samples_client._events if _matches(e['db']['statement'])]
     assert len(matching) > 0, "should have collected an event"
     event = matching[0]
     assert event['db']['plan']['definition'] is not None, "missing execution plan"
@@ -288,6 +288,7 @@ def test_statement_samples(instance_complex, events_statements_table):
 @pytest.mark.integration
 @pytest.mark.usefixtures('dd_environment')
 def test_statement_samples_collection_loop_inactive_stop(aggregator, instance_complex):
+    # confirm that the collection loop stops on its own after the check has not been run for a while
     config = copy.deepcopy(instance_complex)
     config['min_collection_interval'] = 1
     config['statement_samples'] = {'enabled': True, 'run_sync': False}
