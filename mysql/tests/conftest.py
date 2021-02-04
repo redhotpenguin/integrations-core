@@ -151,35 +151,16 @@ def version_metadata():
     }
 
 
-def _init_consumers(conn):
+def _init_datadog_sample_collection(conn):
     cur = conn.cursor()
     cur.execute(
         "UPDATE performance_schema.setup_consumers SET enabled = 'YES' WHERE name = 'events_statements_history_long'")
+    cur.execute("CREATE DATABASE datadog")
+    _create_explain_procedure(conn, "datadog")
+    _create_explain_procedure(conn, "mysql")
 
 
-def init_master():
-    conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
-    _add_dog_user(conn)
-    _init_consumers(conn)
-
-
-def init_slave():
-    pymysql.connect(host=common.HOST, port=common.SLAVE_PORT, user=common.USER, passwd=common.PASS)
-
-
-def _add_dog_user(conn):
-    cur = conn.cursor()
-    cur.execute("CREATE USER 'dog'@'%' IDENTIFIED BY 'dog';")
-    if MYSQL_FLAVOR == 'mysql' and MYSQL_VERSION == '8.0':
-        cur.execute("GRANT REPLICATION CLIENT ON *.* TO 'dog'@'%';")
-        cur.execute("ALTER USER 'dog'@'%' WITH MAX_USER_CONNECTIONS 5;")
-    else:
-        cur.execute("GRANT REPLICATION CLIENT ON *.* TO 'dog'@'%' WITH MAX_USER_CONNECTIONS 5;")
-    cur.execute("GRANT PROCESS ON *.* TO 'dog'@'%';")
-    cur.execute("GRANT SELECT ON performance_schema.* TO 'dog'@'%'")
-
-
-def _create_explain_function(conn, schema):
+def _create_explain_procedure(conn, schema):
     cur = conn.cursor()
     cur.execute("""
     CREATE PROCEDURE {schema}.explain_statement(IN query TEXT)
@@ -195,6 +176,28 @@ def _create_explain_function(conn, schema):
     cur.close()
 
 
+def init_master():
+    conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
+    _add_dog_user(conn)
+    _init_datadog_sample_collection(conn)
+
+
+def init_slave():
+    pymysql.connect(host=common.HOST, port=common.SLAVE_PORT, user=common.USER, passwd=common.PASS)
+
+
+def _add_dog_user(conn):
+    cur = conn.cursor()
+    cur.execute("CREATE USER 'dog'@'%' IDENTIFIED BY 'dog'")
+    cur.execute("ALTER USER 'dog'@'%' WITH MAX_USER_CONNECTIONS 0")
+    if MYSQL_FLAVOR == 'mysql' and MYSQL_VERSION == '8.0':
+        cur.execute("GRANT REPLICATION CLIENT ON *.* TO 'dog'@'%'")
+    else:
+        cur.execute("GRANT REPLICATION CLIENT ON *.* TO 'dog'@'%'")
+    cur.execute("GRANT PROCESS ON *.* TO 'dog'@'%';")
+    cur.execute("GRANT SELECT ON performance_schema.* TO 'dog'@'%'")
+
+
 def populate_database():
     conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
 
@@ -207,7 +210,7 @@ def populate_database():
     cur.execute("INSERT INTO testdb.users (name,age) VALUES('Bob',20);")
     cur.execute("GRANT SELECT ON testdb.users TO 'dog'@'%';")
     cur.close()
-    _create_explain_function(conn, "testdb")
+    _create_explain_procedure(conn, "testdb")
 
 
 def _setup_statement_sampling():

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from concurrent.futures.thread import ThreadPoolExecutor
 from contextlib import closing
@@ -57,7 +58,42 @@ EVENTS_STATEMENTS_SAMPLE_EXCLUDE_KEYS = {
     'processlist_host'
 }
 
-PYMYSQL_EXCEPTIONS = (pymysql.err.InternalError, pymysql.err.ProgrammingError)
+EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
+    SELECT current_schema,
+           sql_text,
+           IFNULL(digest_text, sql_text) AS digest_text,
+           timer_start,
+           UNIX_TIMESTAMP()-(select VARIABLE_VALUE from performance_schema.global_status
+                    where VARIABLE_NAME='UPTIME')+timer_end*1e-12 as timer_end_time_s,
+           timer_wait / 1000 AS timer_wait_ns,
+           lock_time / 1000 AS lock_time_ns,
+           rows_affected,
+           rows_sent,
+           rows_examined,
+           select_full_join,
+           select_full_range_join,
+           select_range,
+           select_range_check,
+           select_scan,
+           sort_merge_passes,
+           sort_range,
+           sort_rows,
+           sort_scan,
+           no_index_used,
+           no_good_index_used,
+           processlist_user,
+           processlist_host,
+           processlist_db
+        FROM performance_schema.{events_statements_table} as E
+        LEFT JOIN performance_schema.threads as T
+        ON E.thread_id = T.thread_id
+        WHERE sql_text IS NOT NULL
+            AND event_name like %s
+            AND (digest_text is NULL OR digest_text NOT LIKE %s)
+            AND timer_start > %s
+    ORDER BY timer_wait DESC
+    LIMIT %s
+""")
 
 PYMYSQL_NON_RETRYABLE_ERRORS = frozenset(
     {
@@ -103,6 +139,10 @@ class MySQLStatementSamples(object):
         self._events_statements_row_limit = self._config.statement_samples_config.get('events_statements_row_limit',
                                                                                       5000)
         self._explain_procedure = self._config.statement_samples_config.get('explain_procedure', 'explain_statement')
+        self._fully_qualified_explain_procedure = self._config.statement_samples_config.get(
+            'fully_qualified_explain_procedure',
+            'datadog.explain_statement'
+        )
         self._preferred_events_statements_tables = EVENTS_STATEMENTS_PREFERRED_TABLES
         events_statements_table = self._config.statement_samples_config.get('events_statements_table', None)
         if events_statements_table:
@@ -134,6 +174,14 @@ class MySQLStatementSamples(object):
             maxsize=self._config.statement_samples_config.get('seen_samples_cache_maxsize', 10000),
             ttl=60 * 60 / self._config.statement_samples_config.get('samples_per_hour_per_query', 15)
         )
+
+        self._explain_strategies = {
+            'PROCEDURE': self._run_explain_procedure,
+            'FQ_PROCEDURE': self._run_fully_qualified_explain_procedure,
+            'STATEMENT': self._run_explain,
+        }
+
+        self._preferred_explain_strategies = ['PROCEDURE', 'FQ_PROCEDURE', 'STATEMENT']
 
     def run_sampler(self, tags):
         """
@@ -183,53 +231,12 @@ class MySQLStatementSamples(object):
                               tags=self._tags + ["error:collection-loop-failure-{}".format(type(e))])
 
     def _get_new_events_statements(self, events_statements_table, row_limit):
-        start = time.time()
-
         # Select the most recent events with a bias towards events which have higher wait times
-        query = """
-            SELECT current_schema AS current_schema,
-                   sql_text,
-                   IFNULL(digest_text, sql_text) AS digest_text,
-                   timer_start,
-                   UNIX_TIMESTAMP()-(select VARIABLE_VALUE from performance_schema.global_status
-                            where VARIABLE_NAME='UPTIME')+timer_end*1e-12 as timer_end_time_s,
-                   MAX(timer_wait) / 1000 AS max_timer_wait_ns,
-                   lock_time / 1000 AS lock_time_ns,
-                   rows_affected,
-                   rows_sent,
-                   rows_examined,
-                   select_full_join,
-                   select_full_range_join,
-                   select_range,
-                   select_range_check,
-                   select_scan,
-                   sort_merge_passes,
-                   sort_range,
-                   sort_rows,
-                   sort_scan,
-                   no_index_used,
-                   no_good_index_used,
-                   processlist_user,
-                   processlist_host,
-                   processlist_db
-                FROM performance_schema.{events_statements_table} as E
-                LEFT JOIN performance_schema.threads as T
-                ON E.thread_id = T.thread_id
-                WHERE sql_text IS NOT NULL
-                    AND event_name like %s
-                    AND (digest_text is NULL OR digest_text NOT LIKE %s)
-                    AND timer_start > %s
-            GROUP BY digest
-            ORDER BY timer_wait DESC
-            LIMIT %s
-            """.format(
-            events_statements_table=events_statements_table
-        )
-
+        start = time.time()
+        query = EVENTS_STATEMENTS_QUERY.format(events_statements_table=events_statements_table)
         with closing(self._get_db_connection().cursor(pymysql.cursors.DictCursor)) as cursor:
             params = ('statement/%', 'EXPLAIN %', self._checkpoint, row_limit)
             self._log.debug("running query: " + query, *params)
-            cursor.execute("SET sql_mode=(SELECT REPLACE(@@sql_mode, 'ONLY_FULL_GROUP_BY', ''))")
             cursor.execute(query, params)
             rows = cursor.fetchall()
             if not rows:
@@ -294,7 +301,7 @@ class MySQLStatementSamples(object):
             self._explained_statements_cache[query_signature] = True
 
             normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None
-            plan = self._attempt_explain_safe(row['sql_text'], row['current_schema'])
+            plan = self._explain_statement_safe(row['sql_text'], row['current_schema'])
             if plan:
                 normalized_plan = datadog_agent.obfuscate_sql_exec_plan(plan, normalize=True) if plan else None
                 obfuscated_plan = datadog_agent.obfuscate_sql_exec_plan(plan)
@@ -310,7 +317,7 @@ class MySQLStatementSamples(object):
                     "service": self._service,
                     "ddsource": "mysql",
                     "ddtags": self._tags_str,
-                    "duration": row['max_timer_wait_ns'],
+                    "duration": row['timer_wait_ns'],
                     "network": {
                         "client": {
                             "ip": row.get('processlist_host', None),
@@ -426,11 +433,11 @@ class MySQLStatementSamples(object):
         self._check.gauge("dd.mysql.collect_statement_samples.explained_statements_cache.len",
                           len(self._explained_statements_cache), tags=tags)
 
-    def _attempt_explain_safe(self, sql_text, schema):
+    def _explain_statement_safe(self, sql_text, schema):
         start_time = time.time()
         with closing(self._get_db_connection().cursor()) as cursor:
             try:
-                plan = self._attempt_explain(cursor, sql_text, schema)
+                plan = self._explain_statement(cursor, sql_text, schema)
                 self._check.histogram("dd.mysql.run_explain.time", (time.time() - start_time) * 1000, tags=self._tags)
                 return plan
             except Exception as e:
@@ -438,7 +445,7 @@ class MySQLStatementSamples(object):
                                   tags=self._tags + ["error:explain-{}".format(type(e))])
                 self._log.exception("failed to run explain on query %s", sql_text)
 
-    def _attempt_explain(self, cursor, statement, schema):
+    def _explain_statement(self, cursor, statement, schema):
         """
         Tries the available methods used to explain a statement for the given schema. If a non-retryable
         error occurs (such as a permissions error), then statements executed under the schema will be
@@ -447,77 +454,63 @@ class MySQLStatementSamples(object):
         # Obfuscate the statement for logging
         obfuscated_statement = datadog_agent.obfuscate_sql(statement)
         strategy_cache_key = 'explain_strategy:%s' % schema
-
-        explain_strategy_none = 'NONE'
-        fns_by_strategy = {
-            'PROCEDURE': self._run_explain_procedure,
-            'STATEMENT': self._run_explain,
-        }
+        explain_strategy_error = 'ERROR'
+        tags = self._tags + ["schema:{}".format(schema)]
 
         if not self._can_explain(statement):
             self._log.debug('Skipping statement which cannot be explained: %s', obfuscated_statement)
             return None
 
-        if self._collection_strategy_cache.get(strategy_cache_key) == explain_strategy_none:
+        if self._collection_strategy_cache.get(strategy_cache_key) == explain_strategy_error:
             self._log.debug('Skipping statement due to cached collection failure: %s', obfuscated_statement)
             return None
 
         try:
-            # Switch to the right schema; this is necessary when the statement uses non-fully qualified tables
+            # If there was a default schema when this query was run, then switch to it before trying to collect
+            # the execution plan. This is necessary when the statement uses non-fully qualified tables
             # e.g. `select * from mytable` instead of `select * from myschema.mytable`
-            self._use_schema(cursor, schema)
-        except PYMYSQL_EXCEPTIONS as e:
+            if schema:
+                cursor.execute('USE `{}`'.format(schema))
+            self._log.debug('Using schema=%s', schema)
+        except pymysql.err.DatabaseError as e:
             if len(e.args) != 2:
                 raise
             if e.args[0] in PYMYSQL_NON_RETRYABLE_ERRORS:
-                self._collection_strategy_cache[strategy_cache_key] = explain_strategy_none
+                self._collection_strategy_cache[strategy_cache_key] = explain_strategy_error
             self._check.count("dd.mysql.statement_samples.error", 1,
-                              tags=self._tags + ["error:explain-use-schema-{}".format(type(e))])
+                              tags=tags + ["error:explain-use-schema-{}".format(type(e))])
             self._log.debug(
-                'Failed to collect execution plan because %s schema could not be accessed: %s, statement: %s',
-                schema,
-                e.args,
-                obfuscated_statement,
-            )
+                'Failed to collect execution plan because schema could not be accessed. error=%s, schema=%s, '
+                'statement="%s"', e.args, schema, obfuscated_statement)
             return None
 
         # Use a cached strategy for the schema, if any, or try each strategy to collect plans
-        strategies = list(fns_by_strategy.keys())
+        strategies = list(self._preferred_explain_strategies)
         cached = self._collection_strategy_cache.get(strategy_cache_key)
-        if cached is not None:
+        if cached:
             strategies.remove(cached)
             strategies.insert(0, cached)
 
         for strategy in strategies:
-            fn = fns_by_strategy[strategy]
             try:
-                plan = fn(cursor, statement)
+                plan = self._explain_strategies[strategy](cursor, statement)
                 if plan:
                     self._collection_strategy_cache[strategy_cache_key] = strategy
+                    self._log.debug(
+                        'Successfully collected execution plan. strategy=%s, schema=%s, statement="%s"',
+                        strategy, schema, obfuscated_statement)
                     return plan
-            except PYMYSQL_EXCEPTIONS as e:
+            except pymysql.err.DatabaseError as e:
                 if len(e.args) != 2:
                     raise
                 if e.args[0] in PYMYSQL_NON_RETRYABLE_ERRORS:
-                    self._collection_strategy_cache[strategy_cache_key] = explain_strategy_none
+                    self._collection_strategy_cache[strategy_cache_key] = explain_strategy_error
                 self._check.count("dd.mysql.statement_samples.error", 1,
-                                  tags=self._tags + ["error:explain-attempt-{}-{}".format(strategy, type(e))])
+                                  tags=tags + ["error:explain-attempt-{}-{}".format(strategy, type(e))])
                 self._log.debug(
-                    'Failed to collect execution plan with strategy %s, error: %s, statement: %s',
-                    strategy,
-                    e.args,
-                    obfuscated_statement,
-                )
+                    'Failed to collect execution plan. error=%s, strategy=%s, schema=%s, statement="%s"',
+                    e.args, strategy, schema, obfuscated_statement)
                 continue
-
-    def _use_schema(self, cursor, schema):
-        """
-        Switch to the schema, if specified. Schema may not always be required for a session as long
-        as fully-qualified schema and tables are used in the query. These should always be valid for
-        running an explain.
-        """
-        if schema is not None:
-            cursor.execute('USE `{}`'.format(schema))
 
     def _run_explain(self, cursor, statement):
         """
@@ -528,9 +521,16 @@ class MySQLStatementSamples(object):
 
     def _run_explain_procedure(self, cursor, statement):
         """
-        Run the explain by calling the stored procedure `explain_statement` if available.
+        Run the explain by calling the stored procedure if available.
         """
         cursor.execute('CALL {}(%s)'.format(self._explain_procedure), statement)
+        return cursor.fetchone()[0]
+
+    def _run_fully_qualified_explain_procedure(self, cursor, statement):
+        """
+        Run the explain by calling the fully qualified stored procedure if available.
+        """
+        cursor.execute('CALL {}(%s)'.format(self._fully_qualified_explain_procedure), statement)
         return cursor.fetchone()[0]
 
     @staticmethod

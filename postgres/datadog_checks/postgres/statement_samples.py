@@ -177,6 +177,7 @@ class PostgresStatementSamples(object):
         return True
 
     def _run_explain(self, db, statement):
+        # TODO: see if there is default schema issue with postgres as well like mysql?
         if not self._can_explain_statement(statement):
             return
         with db.cursor() as cursor:

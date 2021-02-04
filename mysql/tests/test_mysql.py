@@ -262,8 +262,13 @@ def test_statement_metrics(aggregator, instance_complex):
     "events_statements_history",
     "events_statements_history_long"
 ])
-def test_statement_samples(instance_complex, events_statements_table):
-    # try to collect a sample from all supported events_statements tables
+@pytest.mark.parametrize("explain_strategy", [
+    # 'PROCEDURE' is excluded because we cannot create the explain procedure in performance_scheam
+    'FQ_PROCEDURE',
+    'STATEMENT'
+])
+def test_statement_samples(instance_complex, events_statements_table, explain_strategy):
+    # try to collect a sample from all supported events_statements tables using all possible strategies
     config = copy.deepcopy(instance_complex)
     config['statement_samples'] = {
         'enabled': True,
@@ -271,9 +276,13 @@ def test_statement_samples(instance_complex, events_statements_table):
         'events_statements_table': events_statements_table
     }
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
+    mysql_check._statement_samples._preferred_explain_strategies = [explain_strategy]
+    mysql_check.check(config)
     mysql_check.check(config)
 
     # the only sample we're guaranteed to catch is of the query to collect samples the check itself is making
+    # this sample should be possible using all collection strategies because it's made by the same user that is
+    # collecting it
     def _matches(query):
         return re.match(".*FROM performance_schema.{}.*".format(events_statements_table),
                         re.sub(r'\s+', ' ', query or '').strip())
