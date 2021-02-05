@@ -88,7 +88,8 @@ CREATE_TEMP_TABLE = re.sub(r'\s+', ' ', """
      FROM {statements_table}
         WHERE sql_text IS NOT NULL
         AND event_name like 'statement/%%'
-        AND (digest_text is NULL OR digest_text NOT LIKE 'EXPLAIN %%')
+        AND digest_text is NOT NULL
+        AND digest_text NOT LIKE 'EXPLAIN %%'
         AND timer_start > %s
     LIMIT %s
 """)
@@ -135,8 +136,6 @@ EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
     LEFT JOIN performance_schema.threads as T
         ON E.thread_id = T.thread_id
     WHERE sql_text IS NOT NULL
-        AND event_name like 'statement/%%'
-        AND (digest_text is NULL OR digest_text NOT LIKE 'EXPLAIN %%')
         AND timer_start > %s
         AND row_num = 1
     ORDER BY timer_wait DESC
@@ -320,8 +319,6 @@ class MySQLStatementSamples(object):
             tags = self._tags + ["table:{}".format(events_statements_table)]
             self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
             self._check.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
-            self._check.histogram("dd.mysql.get_new_events_statements.unique_digests",
-                                  len(set(r['digest'] for r in rows)), tags=tags)
             return rows
 
     def _filter_valid_statement_rows(self, rows):
