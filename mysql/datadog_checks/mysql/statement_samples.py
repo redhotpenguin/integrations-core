@@ -99,7 +99,8 @@ SUB_SELECT_EVENTS_NUMBERED = re.sub(r'\s+', ' ', """
         *,
         @row_num := IF(@current_digest = digest, @row_num + 1, 1) AS row_num,
         @current_digest := digest
-    FROM {statements_table})
+    FROM {statements_table}
+    ORDER BY digest, timer_wait)
 """)
 
 EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
