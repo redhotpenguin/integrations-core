@@ -317,9 +317,10 @@ class MySQLStatementSamples(object):
             self._checkpoint = max(r['timer_start'] for r in rows)
             # TODO: why is this necessary
             cursor.execute('SET @@SESSION.sql_notes = 0')
-            tags = ["table:%s".format(events_statements_table)] + self._tags
+            tags = self._tags + ["table:{}".format(events_statements_table)]
             self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
             self._check.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
+            self._log.warning("READ %s rows out of %s. unique digests: %s", len(rows), events_statements_table, len(set(r['digest'] for r in rows)))
             return rows
 
     def _filter_valid_statement_rows(self, rows):
