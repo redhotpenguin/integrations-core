@@ -320,7 +320,8 @@ class MySQLStatementSamples(object):
             tags = self._tags + ["table:{}".format(events_statements_table)]
             self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
             self._check.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
-            self._check.gauge("dd.mysql.get_new_events_statements.rows.gauge", len(rows), tags=tags)
+            self._check.histogram("dd.mysql.get_new_events_statements.unique_digests",
+                                  len(set(r['digest'] for r in rows)), tags=tags)
             return rows
 
     def _filter_valid_statement_rows(self, rows):
