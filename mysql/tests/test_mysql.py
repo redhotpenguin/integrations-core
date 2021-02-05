@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import time
+from collections import Counter
 from contextlib import closing
 from os import environ
 
@@ -319,6 +320,31 @@ def test_statement_samples_collection_loop_inactive_stop(aggregator, instance_co
     while mysql_check._statement_samples._collection_loop_future.running():
         time.sleep(0.1)
     aggregator.assert_metric("dd.mysql.statement_samples.collection_loop_inactive_stop")
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures('dd_environment')
+def test_statement_samples_max_per_digest(aggregator, instance_complex):
+    # clear out any events from previous test runs
+    statement_samples_client._events = []
+
+    # try to collect a sample from all supported events_statements tables using all possible strategies
+    config = copy.deepcopy(instance_complex)
+    config['statement_samples'] = {
+        'enabled': True,
+        'run_sync': True,
+        'events_statements_table': 'events_statements_history_long'
+    }
+    mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
+
+    for _ in range(10):
+        mysql_check.check(config)
+
+    rows = mysql_check._statement_samples._get_new_events_statements('events_statements_history_long', 1000)
+
+    count_by_digest = Counter(r['digest'] for r in rows)
+    for digest, count in count_by_digest.items():
+        assert count == 1, "we should be reading exactly one row per digest out of the database"
 
 
 @pytest.mark.integration

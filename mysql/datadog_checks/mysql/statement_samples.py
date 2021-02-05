@@ -107,6 +107,7 @@ EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
     SELECT 
         current_schema,
         sql_text,
+        digest,
         IFNULL(digest_text, sql_text) AS digest_text,
         timer_start,
         UNIX_TIMESTAMP()-(select VARIABLE_VALUE from performance_schema.global_status
@@ -151,12 +152,6 @@ PYMYSQL_NON_RETRYABLE_ERRORS = frozenset(
         1370,  # no execute on procedure
     }
 )
-
-
-class ExpectedError:
-    def __init__(self, cause, message):
-        self.cause = cause
-        self.message = message
 
 
 class MySQLStatementSamples(object):
