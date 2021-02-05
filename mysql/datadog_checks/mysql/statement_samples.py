@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import time
@@ -58,39 +59,84 @@ EVENTS_STATEMENTS_SAMPLE_EXCLUDE_KEYS = {
     'processlist_host'
 }
 
-EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
-    SELECT current_schema,
-           sql_text,
-           IFNULL(digest_text, sql_text) AS digest_text,
-           timer_start,
-           UNIX_TIMESTAMP()-(select VARIABLE_VALUE from performance_schema.global_status
-                    where VARIABLE_NAME='UPTIME')+timer_end*1e-12 as timer_end_time_s,
-           timer_wait / 1000 AS timer_wait_ns,
-           lock_time / 1000 AS lock_time_ns,
-           rows_affected,
-           rows_sent,
-           rows_examined,
-           select_full_join,
-           select_full_range_join,
-           select_range,
-           select_range_check,
-           select_scan,
-           sort_merge_passes,
-           sort_range,
-           sort_rows,
-           sort_scan,
-           no_index_used,
-           no_good_index_used,
-           processlist_user,
-           processlist_host,
-           processlist_db
-        FROM performance_schema.{events_statements_table} as E
-        LEFT JOIN performance_schema.threads as T
-        ON E.thread_id = T.thread_id
+CREATE_TEMP_TABLE = re.sub(r'\s+', ' ', """
+    CREATE TEMPORARY TABLE {temp_table} SELECT
+        current_schema,
+        sql_text,
+        digest,
+        digest_text,
+        timer_start,
+        timer_end,
+        timer_wait,
+        lock_time,
+        rows_affected,
+        rows_sent,
+        rows_examined,
+        select_full_join,
+        select_full_range_join,
+        select_range,
+        select_range_check,
+        select_scan,
+        sort_merge_passes,
+        sort_range,
+        sort_rows,
+        sort_scan,
+        no_index_used,
+        no_good_index_used,
+        event_name,
+        thread_id
+     FROM {statements_table}
         WHERE sql_text IS NOT NULL
-            AND event_name like %s
-            AND (digest_text is NULL OR digest_text NOT LIKE %s)
-            AND timer_start > %s
+        AND event_name like 'statement/%%'
+        AND (digest_text is NULL OR digest_text NOT LIKE 'EXPLAIN %%')
+        AND timer_start > %s
+    LIMIT %s
+""")
+
+# TODO: add mysql 8 version using window functions
+SUB_SELECT_EVENTS_NUMBERED = re.sub(r'\s+', ' ', """
+    (SELECT
+        *,
+        @row_num := IF(@current_digest = digest, @row_num + 1, 1) AS row_num,
+        @current_digest := digest
+    FROM {statements_table})
+""")
+
+EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
+    SELECT 
+        current_schema,
+        sql_text,
+        IFNULL(digest_text, sql_text) AS digest_text,
+        timer_start,
+        UNIX_TIMESTAMP()-(select VARIABLE_VALUE from performance_schema.global_status
+            where VARIABLE_NAME='UPTIME')+timer_end*1e-12 as timer_end_time_s,
+        timer_wait / 1000 AS timer_wait_ns,
+        lock_time / 1000 AS lock_time_ns,
+        rows_affected,
+        rows_sent,
+        rows_examined,
+        select_full_join,
+        select_full_range_join,
+        select_range,
+        select_range_check,
+        select_scan,
+        sort_merge_passes,
+        sort_range,
+        sort_rows,
+        sort_scan,
+        no_index_used,
+        no_good_index_used,
+        processlist_user,
+        processlist_host,
+        processlist_db
+    FROM {statements_numbered} as E
+    LEFT JOIN performance_schema.threads as T
+        ON E.thread_id = T.thread_id
+    WHERE sql_text IS NOT NULL
+        AND event_name like 'statement/%%'
+        AND (digest_text is NULL OR digest_text NOT LIKE 'EXPLAIN %%')
+        AND timer_start > %s
+        AND row_num = 1
     ORDER BY timer_wait DESC
     LIMIT %s
 """)
@@ -104,6 +150,12 @@ PYMYSQL_NON_RETRYABLE_ERRORS = frozenset(
         1370,  # no execute on procedure
     }
 )
+
+
+class ExpectedError:
+    def __init__(self, cause, message):
+        self.cause = cause
+        self.message = message
 
 
 class MySQLStatementSamples(object):
@@ -142,6 +194,10 @@ class MySQLStatementSamples(object):
         self._fully_qualified_explain_procedure = self._config.statement_samples_config.get(
             'fully_qualified_explain_procedure',
             'datadog.explain_statement'
+        )
+        self._events_statements_temp_table = self._config.statement_samples_config.get(
+            'events_statements_temp_table_name',
+            'datadog.temp_events'
         )
         self._preferred_events_statements_tables = EVENTS_STATEMENTS_PREFERRED_TABLES
         events_statements_table = self._config.statement_samples_config.get('events_statements_table', None)
@@ -225,24 +281,45 @@ class MySQLStatementSamples(object):
                     self._check.count("dd.mysql.statement_samples.collection_loop_inactive_stop", 1, tags=self._tags)
                     break
                 self._collect_statement_samples()
-        except Exception as e:
-            self._log.exception("mysql statement sampler collection loop failure")
+        except pymysql.err.DatabaseError as e:
+            self._log.error("mysql statement sampler database error: %s", e,
+                            exc_info=self._log.getEffectiveLevel() == logging.DEBUG)
             self._check.count("dd.mysql.statement_samples.error", 1,
-                              tags=self._tags + ["error:collection-loop-failure-{}".format(type(e))])
+                              tags=self._tags + ["error:collection-loop-database-error-{}".format(type(e))])
+        except Exception as e:
+            self._log.exception("mysql statement sampler collection loop crash")
+            self._check.count("dd.mysql.statement_samples.error", 1,
+                              tags=self._tags + ["error:collection-loop-crash-{}".format(type(e))])
 
     def _get_new_events_statements(self, events_statements_table, row_limit):
         # Select the most recent events with a bias towards events which have higher wait times
         start = time.time()
-        query = EVENTS_STATEMENTS_QUERY.format(events_statements_table=events_statements_table)
+        drop_temp_table_query = "DROP TEMPORARY TABLE IF EXISTS {}".format(self._events_statements_temp_table)
+        params = (self._checkpoint, row_limit)
         with closing(self._get_db_connection().cursor(pymysql.cursors.DictCursor)) as cursor:
-            params = ('statement/%', 'EXPLAIN %', self._checkpoint, row_limit)
-            self._log.debug("running query: " + query, *params)
-            cursor.execute(query, params)
+            try:
+                cursor.execute(drop_temp_table_query)
+                cursor.execute(CREATE_TEMP_TABLE.format(
+                    temp_table=self._events_statements_temp_table,
+                    statements_table="performance_schema." + events_statements_table
+                ), params)
+            except pymysql.err.DatabaseError as e:
+                self._check.count("dd.mysql.statement_samples.error", 1,
+                                  tags=self._tags + ["error:create-temp-table-{}".format(type(e))])
+                raise
+            cursor.execute("set @row_num = 0")
+            cursor.execute("set @current_digest = ''")
+            cursor.execute(EVENTS_STATEMENTS_QUERY.format(
+                statements_numbered=SUB_SELECT_EVENTS_NUMBERED.format(
+                    statements_table=self._events_statements_temp_table)
+            ), params)
             rows = cursor.fetchall()
+            cursor.execute(drop_temp_table_query)
             if not rows:
                 self._log.debug("no statements found in performance_schema.%s", events_statements_table)
                 return rows
             self._checkpoint = max(r['timer_start'] for r in rows)
+            # TODO: why is this necessary
             cursor.execute('SET @@SESSION.sql_notes = 0')
             tags = ["table:%s".format(events_statements_table)] + self._tags
             self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
@@ -497,8 +574,8 @@ class MySQLStatementSamples(object):
                 if plan:
                     self._collection_strategy_cache[strategy_cache_key] = strategy
                     self._log.debug(
-                        'Successfully collected execution plan. strategy=%s, schema=%s, statement="%s"',
-                        strategy, schema, obfuscated_statement)
+                        'Successfully collected execution plan. strategy=%s, schema=%s, statement="%s", plan="%s"',
+                        strategy, schema, obfuscated_statement, plan)
                     return plan
             except pymysql.err.DatabaseError as e:
                 if len(e.args) != 2:

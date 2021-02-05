@@ -263,11 +263,14 @@ def test_statement_metrics(aggregator, instance_complex):
     "events_statements_history_long"
 ])
 @pytest.mark.parametrize("explain_strategy", [
-    # 'PROCEDURE' is excluded because we cannot create the explain procedure in performance_scheam
+    'PROCEDURE',
     'FQ_PROCEDURE',
     'STATEMENT'
 ])
 def test_statement_samples(instance_complex, events_statements_table, explain_strategy):
+    # clear out any events from previous test runs
+    statement_samples_client._events = []
+
     # try to collect a sample from all supported events_statements tables using all possible strategies
     config = copy.deepcopy(instance_complex)
     config['statement_samples'] = {
@@ -278,18 +281,28 @@ def test_statement_samples(instance_complex, events_statements_table, explain_st
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
     mysql_check._statement_samples._preferred_explain_strategies = [explain_strategy]
     mysql_check.check(config)
-    mysql_check.check(config)
 
-    # the only sample we're guaranteed to catch is of the query to collect samples the check itself is making
-    # this sample should be possible using all collection strategies because it's made by the same user that is
-    # collecting it
     def _matches(query):
-        return re.match(".*FROM performance_schema.{}.*".format(events_statements_table),
+        # this query is always run by the check before the samples are collected so we should be able to catch
+        # and explain it
+        return re.match(".*FROM performance_schema.events_statements_summary_by_digest*",
                         re.sub(r'\s+', ' ', query or '').strip())
+
+    if events_statements_table == 'events_statements_current':
+        # we don't expect to collect samples this table because the queries we run to collect statements
+        # can't be explained after the fact (due to using temporary tables)
+        return
 
     matching = [e for e in statement_samples_client._events if _matches(e['db']['statement'])]
     assert len(matching) > 0, "should have collected an event"
+
     event = matching[0]
+
+    # since we can't put an explain_statement procedure into performance_schema we won't be able to collect any
+    # plans for this strategy
+    if explain_strategy == "PROCEDURE":
+        return
+
     assert event['db']['plan']['definition'] is not None, "missing execution plan"
     assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 

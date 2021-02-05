@@ -156,6 +156,7 @@ def _init_datadog_sample_collection(conn):
     cur.execute(
         "UPDATE performance_schema.setup_consumers SET enabled = 'YES' WHERE name = 'events_statements_history_long'")
     cur.execute("CREATE DATABASE datadog")
+    cur.execute("GRANT CREATE TEMPORARY TABLES ON `datadog`.* TO 'dog'@'%';")
     _create_explain_procedure(conn, "datadog")
     _create_explain_procedure(conn, "mysql")
 
