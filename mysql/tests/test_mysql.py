@@ -303,17 +303,17 @@ def test_statement_samples(instance_complex, events_statements_table, explain_st
         mysql_check.check(config)
         matching = [e for e in statement_samples_client._events if e['db']['statement'] == statement]
         assert len(matching) > 0, "should have collected an event"
-        event = matching[0]
+        with_plans = [e for e in matching if e['db']['plan']['definition'] is not None]
         if schema == 'testdb' and explain_strategy == 'FQ_PROCEDURE':
             # explain via the FQ_PROCEDURE will fail if a query contains non-fully-qualified tables because it will
             # default to the schema of the FQ_PROCEDURE, so in case of "select * from testdb" it'll try to do
             # "select start from datadog.testdb" which would be the wrong schema.
-            assert event['db']['plan']['definition'] is None, "cannot collect plan in this case"
+            assert not with_plans, "cannot collect plan in this case"
         elif not schema and explain_strategy == 'PROCEDURE':
             # if there is no default schema then we cannot use the non-fully-qualified procedure strategy
-            assert event['db']['plan']['definition'] is None, "cannot collect plan in this case"
+            assert not with_plans, "cannot collect plan in this case"
         else:
-            assert event['db']['plan']['definition'] is not None, "missing execution plan"
+            event = with_plans[0]
             assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
     db.close()

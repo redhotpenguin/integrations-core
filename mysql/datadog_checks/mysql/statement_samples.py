@@ -97,7 +97,6 @@ CREATE_TEMP_TABLE = re.sub(r'\s+', ' ', """
 # neither window functions nor this variable-based window function emulation can be used directly on performance_schema
 # tables due to some underlying issue regarding how the performance_schema storage engine works (for some reason
 # many of the rows end up making it past the WHERE clause when they should have been filtered out)
-
 SUB_SELECT_EVENTS_NUMBERED = re.sub(r'\s+', ' ', """
     (SELECT
         *,
@@ -319,9 +318,12 @@ class MySQLStatementSamples(object):
                 self._check.count("dd.mysql.statement_samples.error", 1,
                                   tags=self._tags + ["error:create-temp-table-{}".format(type(e))])
                 raise
-            self._cursor_run(cursor, "set @row_num = 0")
-            self._cursor_run(cursor, "set @current_digest = ''")
-            sub_select = SUB_SELECT_EVENTS_WINDOW if self._has_window_functions else SUB_SELECT_EVENTS_NUMBERED
+            if self._has_window_functions:
+                sub_select = SUB_SELECT_EVENTS_WINDOW
+            else:
+                self._cursor_run(cursor, "set @row_num = 0")
+                self._cursor_run(cursor, "set @current_digest = ''")
+                sub_select = SUB_SELECT_EVENTS_NUMBERED
             self._cursor_run(cursor, EVENTS_STATEMENTS_QUERY.format(
                 statements_numbered=sub_select.format(statements_table=self._events_statements_temp_table)
             ), params)
@@ -383,9 +385,11 @@ class MySQLStatementSamples(object):
 
             query_signature = compute_sql_signature(datadog_agent.obfuscate_sql(row['digest_text']))
             apm_resource_hash = compute_sql_signature(obfuscated_statement)
-            if query_signature in self._explained_statements_cache:
+
+            cache_key = (row['current_schema'], query_signature)
+            if cache_key in self._explained_statements_cache:
                 continue
-            self._explained_statements_cache[query_signature] = True
+            self._explained_statements_cache[cache_key] = True
 
             normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None
             plan = self._explain_statement_safe(row['sql_text'], row['current_schema'], obfuscated_statement)
