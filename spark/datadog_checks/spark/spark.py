@@ -475,16 +475,17 @@ class SparkCheck(AgentCheck):
                 if not version_set:
                     version_set = self._collect_version(tracking_url, tags)
                 response = self._rest_request_to_json(tracking_url, SPARK_APPS_PATH, SPARK_SERVICE_CHECK, tags)
-            except RequestException as e:
+
+                for app in response:
+                    app_id = app.get('id')
+                    app_name = app.get('name')
+
+                    if app_id and app_name:
+                        spark_apps[app_id] = (app_name, tracking_url)
+
+            except Exception as e:
                 self.log.warning("Exception happened when fetching app ids for %s: %s", tracking_url, e)
                 continue
-
-            for app in response:
-                app_id = app.get('id')
-                app_name = app.get('name')
-
-                if app_id and app_name:
-                    spark_apps[app_id] = (app_name, tracking_url)
 
         return spark_apps
 
