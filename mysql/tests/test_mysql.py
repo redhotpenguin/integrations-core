@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import time
+import pymysql
 from collections import Counter
 from contextlib import closing
 from os import environ
@@ -281,32 +282,30 @@ def test_statement_samples(instance_complex, events_statements_table, explain_st
     }
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
     mysql_check._statement_samples._preferred_explain_strategies = [explain_strategy]
-    mysql_check.check(config)
+
+    query = "select name as nam from testdb.users"
 
     def _matches(query):
-        # this query is always run by the check before the samples are collected so we should be able to catch
-        # and explain it
-        return re.match(".*FROM performance_schema.events_statements_summary_by_digest*",
-                        re.sub(r'\s+', ' ', query or '').strip())
+        return re.match("select name as nam from testdb.users", re.sub(r'\s+', ' ', query or '').strip())
 
-    if events_statements_table == 'events_statements_current':
-        # we don't expect to collect samples this table because the queries we run to collect statements
-        # can't be explained after the fact (due to using temporary tables)
-        return
+    # we deliberately want to keep the connection open for the duration of the test to ensure
+    # the query remains in the events_statements_current and events_statements_history tables
+    # it would be cleared out upon connection close otherwise
+    db = pymysql.connect(**mysql_check._get_connection_args())
+    with closing(db.cursor()) as cursor:
+        mysql_check.check(config)
+        cursor.execute("use testdb")
+        cursor.execute(query)
+        mysql_check.check(config)
+        matching = [e for e in statement_samples_client._events if _matches(e['db']['statement'])]
+        assert len(matching) > 0, "should have collected an event"
+        event = matching[0]
+        assert event['db']['plan']['definition'] is not None, "missing execution plan"
+        assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
-    matching = [e for e in statement_samples_client._events if _matches(e['db']['statement'])]
-    assert len(matching) > 0, "should have collected an event"
+    db.close()
 
-    event = matching[0]
-
-    # since we can't put an explain_statement procedure into performance_schema we won't be able to collect any
-    # plans for this strategy
-    if explain_strategy == "PROCEDURE":
-        return
-
-    assert event['db']['plan']['definition'] is not None, "missing execution plan"
-    assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
-
+# TODO test schema fully qualified vs non
 
 @pytest.mark.integration
 @pytest.mark.usefixtures('dd_environment')
@@ -337,7 +336,7 @@ def test_statement_samples_max_per_digest(aggregator, instance_complex):
     }
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
 
-    for _ in range(10):
+    for _ in range(3):
         mysql_check.check(config)
 
     rows = mysql_check._statement_samples._get_new_events_statements('events_statements_history_long', 1000)

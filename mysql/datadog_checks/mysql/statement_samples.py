@@ -286,15 +286,21 @@ class MySQLStatementSamples(object):
             self._check.count("dd.mysql.statement_samples.error", 1,
                               tags=self._tags + ["error:collection-loop-crash-{}".format(type(e))])
 
+    def _cursor_run(self, cursor, query, params=None):
+        self._log.debug("running query [%s] %s", query, params)
+        cursor.execute(query, params)
+
     def _get_new_events_statements(self, events_statements_table, row_limit):
         # Select the most recent events with a bias towards events which have higher wait times
         start = time.time()
         drop_temp_table_query = "DROP TEMPORARY TABLE IF EXISTS {}".format(self._events_statements_temp_table)
         params = (self._checkpoint, row_limit)
         with closing(self._get_db_connection().cursor(pymysql.cursors.DictCursor)) as cursor:
+            # silence expected warnings to avoid spam
+            cursor.execute('SET @@SESSION.sql_notes = 0')
             try:
-                cursor.execute(drop_temp_table_query)
-                cursor.execute(CREATE_TEMP_TABLE.format(
+                self._cursor_run(cursor, drop_temp_table_query)
+                self._cursor_run(cursor, CREATE_TEMP_TABLE.format(
                     temp_table=self._events_statements_temp_table,
                     statements_table="performance_schema." + events_statements_table
                 ), params)
@@ -302,20 +308,18 @@ class MySQLStatementSamples(object):
                 self._check.count("dd.mysql.statement_samples.error", 1,
                                   tags=self._tags + ["error:create-temp-table-{}".format(type(e))])
                 raise
-            cursor.execute("set @row_num = 0")
-            cursor.execute("set @current_digest = ''")
-            cursor.execute(EVENTS_STATEMENTS_QUERY.format(
+            self._cursor_run(cursor, "set @row_num = 0")
+            self._cursor_run(cursor, "set @current_digest = ''")
+            self._cursor_run(cursor, EVENTS_STATEMENTS_QUERY.format(
                 statements_numbered=SUB_SELECT_EVENTS_NUMBERED.format(
                     statements_table=self._events_statements_temp_table)
             ), params)
             rows = cursor.fetchall()
-            cursor.execute(drop_temp_table_query)
+            self._cursor_run(cursor, drop_temp_table_query)
             if not rows:
                 self._log.debug("no statements found in performance_schema.%s", events_statements_table)
                 return rows
             self._checkpoint = max(r['timer_start'] for r in rows)
-            # TODO: why is this necessary
-            cursor.execute('SET @@SESSION.sql_notes = 0')
             tags = self._tags + ["table:{}".format(events_statements_table)]
             self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
             self._check.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
@@ -416,7 +420,7 @@ class MySQLStatementSamples(object):
         :return:
         """
         with closing(self._get_db_connection().cursor()) as cursor:
-            cursor.execute("SELECT name from performance_schema.setup_consumers WHERE enabled = 'YES'")
+            self._cursor_run(cursor, "SELECT name from performance_schema.setup_consumers WHERE enabled = 'YES'")
             enabled_consumers = set([r[0] for r in cursor.fetchall()])
             self._log.debug("loaded enabled consumers: %s", enabled_consumers)
             return enabled_consumers
@@ -425,7 +429,7 @@ class MySQLStatementSamples(object):
         query = """UPDATE performance_schema.setup_consumers SET enabled = 'YES' WHERE name = %s"""
         with closing(self._get_db_connection().cursor()) as cursor:
             try:
-                cursor.execute(query, name)
+                self._cursor_run(cursor, query, name)
                 self._log.debug('successfully enabled performance_schema consumer %s', name)
                 return True
             except pymysql.err.DatabaseError as e:
@@ -542,8 +546,7 @@ class MySQLStatementSamples(object):
             # the execution plan. This is necessary when the statement uses non-fully qualified tables
             # e.g. `select * from mytable` instead of `select * from myschema.mytable`
             if schema:
-                cursor.execute('USE `{}`'.format(schema))
-            self._log.debug('Using schema=%s', schema)
+                self._cursor_run(cursor, 'USE `{}`'.format(schema))
         except pymysql.err.DatabaseError as e:
             if len(e.args) != 2:
                 raise
@@ -588,21 +591,21 @@ class MySQLStatementSamples(object):
         """
         Run the explain using the EXPLAIN statement
         """
-        cursor.execute('EXPLAIN FORMAT=json {}'.format(statement))
+        self._cursor_run(cursor, 'EXPLAIN FORMAT=json {}'.format(statement))
         return cursor.fetchone()[0]
 
     def _run_explain_procedure(self, cursor, statement):
         """
         Run the explain by calling the stored procedure if available.
         """
-        cursor.execute('CALL {}(%s)'.format(self._explain_procedure), statement)
+        self._cursor_run(cursor, 'CALL {}(%s)'.format(self._explain_procedure), statement)
         return cursor.fetchone()[0]
 
     def _run_fully_qualified_explain_procedure(self, cursor, statement):
         """
         Run the explain by calling the fully qualified stored procedure if available.
         """
-        cursor.execute('CALL {}(%s)'.format(self._fully_qualified_explain_procedure), statement)
+        self._cursor_run(cursor, 'CALL {}(%s)'.format(self._fully_qualified_explain_procedure), statement)
         return cursor.fetchone()[0]
 
     @staticmethod
