@@ -94,7 +94,10 @@ CREATE_TEMP_TABLE = re.sub(r'\s+', ' ', """
     LIMIT %s
 """)
 
-# TODO: add mysql 8 version using window functions
+# neither window functions nor this variable-based window function emulation can be used directly on performance_schema
+# tables due to some underlying issue regarding how the performance_schema storage engine works (for some reason
+# many of the rows end up making it past the WHERE clause when they should have been filtered out)
+
 SUB_SELECT_EVENTS_NUMBERED = re.sub(r'\s+', ' ', """
     (SELECT
         *,
@@ -102,6 +105,12 @@ SUB_SELECT_EVENTS_NUMBERED = re.sub(r'\s+', ' ', """
         @current_digest := digest
     FROM {statements_table}
     ORDER BY digest, timer_wait)
+""")
+SUB_SELECT_EVENTS_WINDOW = re.sub(r'\s+', ' ', """
+    (SELECT
+        *,
+        row_number() over (partition by digest order by timer_wait desc) as row_num
+    FROM {statements_table})
 """)
 
 EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
@@ -195,6 +204,7 @@ class MySQLStatementSamples(object):
             'datadog.temp_events'
         )
         self._preferred_events_statements_tables = EVENTS_STATEMENTS_PREFERRED_TABLES
+        self._has_window_functions = False
         events_statements_table = self._config.statement_samples_config.get('events_statements_table', None)
         if events_statements_table:
             if events_statements_table in DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND:
@@ -247,6 +257,7 @@ class MySQLStatementSamples(object):
         for t in self._tags:
             if t.startswith('service:'):
                 self._service = t[len('service:'):]
+        self._has_window_functions = self._check.version.version_compatible((8, 0, 0))
         self._last_check_run = time.time()
         if self._run_sync or is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_RUN_SYNC', "false")):
             self._log.debug("running statement sampler synchronously")
@@ -310,9 +321,9 @@ class MySQLStatementSamples(object):
                 raise
             self._cursor_run(cursor, "set @row_num = 0")
             self._cursor_run(cursor, "set @current_digest = ''")
+            sub_select = SUB_SELECT_EVENTS_WINDOW if self._has_window_functions else SUB_SELECT_EVENTS_NUMBERED
             self._cursor_run(cursor, EVENTS_STATEMENTS_QUERY.format(
-                statements_numbered=SUB_SELECT_EVENTS_NUMBERED.format(
-                    statements_table=self._events_statements_temp_table)
+                statements_numbered=sub_select.format(statements_table=self._events_statements_temp_table)
             ), params)
             rows = cursor.fetchall()
             self._cursor_run(cursor, drop_temp_table_query)
