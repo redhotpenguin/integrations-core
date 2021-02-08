@@ -263,13 +263,13 @@ def test_statement_metrics(aggregator, instance_complex):
     "events_statements_current",
     "events_statements_history",
     "events_statements_history_long",
-    #TODO: add none
+    None
 ])
 @pytest.mark.parametrize("explain_strategy", [
     'PROCEDURE',
     'FQ_PROCEDURE',
     'STATEMENT',
-    #TODO: add none
+    None
 ])
 @pytest.mark.parametrize("schema,statement", [
     (None, 'select name as nam from testdb.users'),
