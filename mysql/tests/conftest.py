@@ -6,7 +6,6 @@ import os
 import mock
 import pymysql
 import pytest
-
 from datadog_checks.dev import TempDir, WaitFor, docker_run
 from datadog_checks.dev.conditions import CheckDockerLogs
 
@@ -156,7 +155,7 @@ def _init_datadog_sample_collection(conn):
     cur.execute(
         "UPDATE performance_schema.setup_consumers SET enabled = 'YES' WHERE name = 'events_statements_history_long'")
     cur.execute("CREATE DATABASE datadog")
-    cur.execute("GRANT CREATE TEMPORARY TABLES ON `datadog`.* TO 'dog'@'%';")
+    cur.execute("GRANT CREATE TEMPORARY TABLES ON `datadog`.* TO 'dog'@'%'")
     _create_explain_procedure(conn, "datadog")
     _create_explain_procedure(conn, "mysql")
 
@@ -173,7 +172,7 @@ def _create_explain_procedure(conn, schema):
         DEALLOCATE PREPARE stmt;
     END;
     """.format(schema=schema))
-    cur.execute("GRANT EXECUTE ON PROCEDURE {schema}.explain_statement to 'dog'@'%';".format(schema=schema))
+    cur.execute("GRANT EXECUTE ON PROCEDURE {schema}.explain_statement to 'dog'@'%'".format(schema=schema))
     cur.close()
 
 

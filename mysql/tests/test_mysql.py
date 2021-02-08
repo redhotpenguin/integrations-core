@@ -262,14 +262,21 @@ def test_statement_metrics(aggregator, instance_complex):
 @pytest.mark.parametrize("events_statements_table", [
     "events_statements_current",
     "events_statements_history",
-    "events_statements_history_long"
+    "events_statements_history_long",
+    #TODO: add none
 ])
 @pytest.mark.parametrize("explain_strategy", [
     'PROCEDURE',
     'FQ_PROCEDURE',
-    'STATEMENT'
+    'STATEMENT',
+    #TODO: add none
 ])
-def test_statement_samples(instance_complex, events_statements_table, explain_strategy):
+@pytest.mark.parametrize("schema,statement", [
+    (None, 'select name as nam from testdb.users'),
+    ('datadog', 'select name as nam from testdb.users'),
+    ('testdb', 'select name as nam from users'),
+])
+def test_statement_samples(instance_complex, events_statements_table, explain_strategy, schema, statement):
     # clear out any events from previous test runs
     statement_samples_client._events = []
 
@@ -281,12 +288,8 @@ def test_statement_samples(instance_complex, events_statements_table, explain_st
         'events_statements_table': events_statements_table
     }
     mysql_check = MySql(common.CHECK_NAME, {}, instances=[config])
-    mysql_check._statement_samples._preferred_explain_strategies = [explain_strategy]
-
-    query = "select name as nam from testdb.users"
-
-    def _matches(query):
-        return re.match("select name as nam from testdb.users", re.sub(r'\s+', ' ', query or '').strip())
+    if explain_strategy:
+        mysql_check._statement_samples._preferred_explain_strategies = [explain_strategy]
 
     # we deliberately want to keep the connection open for the duration of the test to ensure
     # the query remains in the events_statements_current and events_statements_history tables
@@ -294,18 +297,27 @@ def test_statement_samples(instance_complex, events_statements_table, explain_st
     db = pymysql.connect(**mysql_check._get_connection_args())
     with closing(db.cursor()) as cursor:
         mysql_check.check(config)
-        cursor.execute("use testdb")
-        cursor.execute(query)
+        if schema:
+            cursor.execute("use {}".format(schema))
+        cursor.execute(statement)
         mysql_check.check(config)
-        matching = [e for e in statement_samples_client._events if _matches(e['db']['statement'])]
+        matching = [e for e in statement_samples_client._events if e['db']['statement'] == statement]
         assert len(matching) > 0, "should have collected an event"
         event = matching[0]
-        assert event['db']['plan']['definition'] is not None, "missing execution plan"
-        assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
+        if schema == 'testdb' and explain_strategy == 'FQ_PROCEDURE':
+            # explain via the FQ_PROCEDURE will fail if a query contains non-fully-qualified tables because it will
+            # default to the schema of the FQ_PROCEDURE, so in case of "select * from testdb" it'll try to do
+            # "select start from datadog.testdb" which would be the wrong schema.
+            assert event['db']['plan']['definition'] is None, "cannot collect plan in this case"
+        elif not schema and explain_strategy == 'PROCEDURE':
+            # if there is no default schema then we cannot use the non-fully-qualified procedure strategy
+            assert event['db']['plan']['definition'] is None, "cannot collect plan in this case"
+        else:
+            assert event['db']['plan']['definition'] is not None, "missing execution plan"
+            assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
     db.close()
 
-# TODO test schema fully qualified vs non
 
 @pytest.mark.integration
 @pytest.mark.usefixtures('dd_environment')

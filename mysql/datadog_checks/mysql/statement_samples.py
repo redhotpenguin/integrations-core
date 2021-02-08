@@ -377,7 +377,7 @@ class MySQLStatementSamples(object):
             self._explained_statements_cache[query_signature] = True
 
             normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None
-            plan = self._explain_statement_safe(row['sql_text'], row['current_schema'])
+            plan = self._explain_statement_safe(row['sql_text'], row['current_schema'], obfuscated_statement)
             if plan:
                 normalized_plan = datadog_agent.obfuscate_sql_exec_plan(plan, normalize=True) if plan else None
                 obfuscated_plan = datadog_agent.obfuscate_sql_exec_plan(plan)
@@ -509,29 +509,29 @@ class MySQLStatementSamples(object):
         self._check.gauge("dd.mysql.collect_statement_samples.explained_statements_cache.len",
                           len(self._explained_statements_cache), tags=tags)
 
-    def _explain_statement_safe(self, sql_text, schema):
+    def _explain_statement_safe(self, sql_text, schema, obfuscated_statement):
         start_time = time.time()
         with closing(self._get_db_connection().cursor()) as cursor:
             try:
-                plan = self._explain_statement(cursor, sql_text, schema)
+                plan = self._explain_statement(cursor, sql_text, schema, obfuscated_statement)
                 self._check.histogram("dd.mysql.run_explain.time", (time.time() - start_time) * 1000, tags=self._tags)
                 return plan
             except Exception as e:
                 self._check.count("dd.mysql.statement_samples.error", 1,
                                   tags=self._tags + ["error:explain-{}".format(type(e))])
-                self._log.exception("failed to run explain on query %s", sql_text)
+                self._log.exception("failed to run explain on query %s", obfuscated_statement)
 
-    def _explain_statement(self, cursor, statement, schema):
+    def _explain_statement(self, cursor, statement, schema, obfuscated_statement):
         """
         Tries the available methods used to explain a statement for the given schema. If a non-retryable
         error occurs (such as a permissions error), then statements executed under the schema will be
         disallowed in future attempts.
         """
-        # Obfuscate the statement for logging
-        obfuscated_statement = datadog_agent.obfuscate_sql(statement)
         strategy_cache_key = 'explain_strategy:%s' % schema
         explain_strategy_error = 'ERROR'
         tags = self._tags + ["schema:{}".format(schema)]
+
+        self._log.debug('explaining statement. schema=%s, statement="%s"', schema, statement)
 
         if not self._can_explain(statement):
             self._log.debug('Skipping statement which cannot be explained: %s', obfuscated_statement)
@@ -568,6 +568,10 @@ class MySQLStatementSamples(object):
 
         for strategy in strategies:
             try:
+                if not schema and strategy == "PROCEDURE":
+                    self._log.debug('skipping PROCEDURE strategy as there is no default schema for this statement="%s"',
+                                    obfuscated_statement)
+                    continue
                 plan = self._explain_strategies[strategy](cursor, statement)
                 if plan:
                     self._collection_strategy_cache[strategy_cache_key] = strategy
@@ -578,14 +582,16 @@ class MySQLStatementSamples(object):
             except pymysql.err.DatabaseError as e:
                 if len(e.args) != 2:
                     raise
-                if e.args[0] in PYMYSQL_NON_RETRYABLE_ERRORS:
-                    self._collection_strategy_cache[strategy_cache_key] = explain_strategy_error
+                # we don't cache failed plan collection failures for specific queries because some queries in a schema
+                # can fail while others succeed. The failed collection will be cached for the specific query
+                # so we won't try to explain it again for the cache duration there.
                 self._check.count("dd.mysql.statement_samples.error", 1,
                                   tags=tags + ["error:explain-attempt-{}-{}".format(strategy, type(e))])
                 self._log.debug(
                     'Failed to collect execution plan. error=%s, strategy=%s, schema=%s, statement="%s"',
                     e.args, strategy, schema, obfuscated_statement)
                 continue
+        return None
 
     def _run_explain(self, cursor, statement):
         """
