@@ -267,8 +267,10 @@ class MySQLStatementSamples(object):
                 self._service = t[len('service:'):]
         if not self._version_processed and self._check.version:
             self._has_window_functions = self._check.version.version_compatible((8, 0, 0))
-            self._global_status_table = "performance_schema.global_status" if self._check.version.version_compatible(
-                (5, 7, 0)) else "information_schema.global_status"
+            if self._check.version.flavor == "MariaDB" or not self._check.version.version_compatible((5, 7, 0)):
+                self._global_status_table = "information_schema.global_status"
+            else:
+                self._global_status_table = "performance_schema.global_status"
             self._version_processed = True
         self._last_check_run = time.time()
         if self._run_sync or is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_RUN_SYNC', "false")):
