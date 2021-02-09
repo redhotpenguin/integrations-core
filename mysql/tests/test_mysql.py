@@ -3,16 +3,15 @@
 # Licensed under a 3-clause BSD style license (see LICENSE)
 import copy
 import json
-import re
 import subprocess
 import time
-import pymysql
 from collections import Counter
 from contextlib import closing
 from os import environ
 
 import mock
 import psutil
+import pymysql
 import pytest
 from datadog_checks.base.utils.db.statement_samples import statement_samples_client
 from datadog_checks.base.utils.platform import Platform
@@ -276,10 +275,7 @@ def test_statement_metrics(aggregator, instance_complex):
     ('datadog', 'select name as nam from testdb.users'),
     ('testdb', 'select name as nam from users'),
 ])
-def test_statement_samples(instance_complex, events_statements_table, explain_strategy, schema, statement):
-    # clear out any events from previous test runs
-    statement_samples_client._events = []
-
+def test_statement_samples_collect(instance_complex, events_statements_table, explain_strategy, schema, statement):
     # try to collect a sample from all supported events_statements tables using all possible strategies
     config = copy.deepcopy(instance_complex)
     config['statement_samples'] = {
@@ -291,37 +287,45 @@ def test_statement_samples(instance_complex, events_statements_table, explain_st
     if explain_strategy:
         mysql_check._statement_samples._preferred_explain_strategies = [explain_strategy]
 
+    mysql_check.check(config)
+    statement_samples_client._events = []
+    mysql_check._statement_samples._init_caches()
+
     # we deliberately want to keep the connection open for the duration of the test to ensure
     # the query remains in the events_statements_current and events_statements_history tables
     # it would be cleared out upon connection close otherwise
     db = pymysql.connect(**mysql_check._get_connection_args())
     with closing(db.cursor()) as cursor:
-        mysql_check.check(config)
+        # run the check once, then clear out all saved events
+        # on the next check run it should only capture events since the last checkpoint
         if schema:
             cursor.execute("use {}".format(schema))
         cursor.execute(statement)
-        mysql_check.check(config)
-        matching = [e for e in statement_samples_client._events if e['db']['statement'] == statement]
-        assert len(matching) > 0, "should have collected an event"
-        with_plans = [e for e in matching if e['db']['plan']['definition'] is not None]
-        if schema == 'testdb' and explain_strategy == 'FQ_PROCEDURE':
-            # explain via the FQ_PROCEDURE will fail if a query contains non-fully-qualified tables because it will
-            # default to the schema of the FQ_PROCEDURE, so in case of "select * from testdb" it'll try to do
-            # "select start from datadog.testdb" which would be the wrong schema.
-            assert not with_plans, "cannot collect plan in this case"
-        elif not schema and explain_strategy == 'PROCEDURE':
-            # if there is no default schema then we cannot use the non-fully-qualified procedure strategy
-            assert not with_plans, "cannot collect plan in this case"
-        else:
-            event = with_plans[0]
-            assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
+    mysql_check.check(config)
+    matching = [e for e in statement_samples_client._events if e['db']['statement'] == statement]
+    assert len(matching) > 0, "should have collected an event"
+    with_plans = [e for e in matching if e['db']['plan']['definition'] is not None]
+    if schema == 'testdb' and explain_strategy == 'FQ_PROCEDURE':
+        # explain via the FQ_PROCEDURE will fail if a query contains non-fully-qualified tables because it will
+        # default to the schema of the FQ_PROCEDURE, so in case of "select * from testdb" it'll try to do
+        # "select start from datadog.testdb" which would be the wrong schema.
+        assert not with_plans, "cannot collect plan in this case"
+    elif not schema and explain_strategy == 'PROCEDURE':
+        # if there is no default schema then we cannot use the non-fully-qualified procedure strategy
+        assert not with_plans, "cannot collect plan in this case"
+    else:
+        event = with_plans[0]
+        assert 'query_block' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
 
+    # we avoid closing these in a try/finally block in order to maintain the connections in case we want to
+    # debug the test with --pdb
+    mysql_check._statement_samples._db.close()
     db.close()
 
 
 @pytest.mark.integration
 @pytest.mark.usefixtures('dd_environment')
-def test_statement_samples_collection_loop_inactive_stop(aggregator, instance_complex):
+def test_statement_samples_loop_inactive_stop(aggregator, instance_complex):
     # confirm that the collection loop stops on its own after the check has not been run for a while
     config = copy.deepcopy(instance_complex)
     config['min_collection_interval'] = 1

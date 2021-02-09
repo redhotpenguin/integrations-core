@@ -216,6 +216,17 @@ class MySQLStatementSamples(object):
                     ', '.join(DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND.keys()),
                 )
 
+        self._init_caches()
+
+        self._explain_strategies = {
+            'PROCEDURE': self._run_explain_procedure,
+            'FQ_PROCEDURE': self._run_fully_qualified_explain_procedure,
+            'STATEMENT': self._run_explain,
+        }
+
+        self._preferred_explain_strategies = ['PROCEDURE', 'FQ_PROCEDURE', 'STATEMENT']
+
+    def _init_caches(self):
         self._collection_strategy_cache = TTLCache(
             maxsize=self._config.statement_samples_config.get('collection_strategy_cache_maxsize', 1000),
             ttl=self._config.statement_samples_config.get('collection_strategy_cache_ttl', 300)
@@ -234,14 +245,6 @@ class MySQLStatementSamples(object):
             maxsize=self._config.statement_samples_config.get('seen_samples_cache_maxsize', 10000),
             ttl=60 * 60 / self._config.statement_samples_config.get('samples_per_hour_per_query', 15)
         )
-
-        self._explain_strategies = {
-            'PROCEDURE': self._run_explain_procedure,
-            'FQ_PROCEDURE': self._run_fully_qualified_explain_procedure,
-            'STATEMENT': self._run_explain,
-        }
-
-        self._preferred_explain_strategies = ['PROCEDURE', 'FQ_PROCEDURE', 'STATEMENT']
 
     def run_sampler(self, tags):
         """
@@ -332,7 +335,6 @@ class MySQLStatementSamples(object):
             if not rows:
                 self._log.debug("no statements found in performance_schema.%s", events_statements_table)
                 return rows
-            self._checkpoint = max(r['timer_start'] for r in rows)
             tags = self._tags + ["table:{}".format(events_statements_table)]
             self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
             self._check.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
@@ -358,6 +360,10 @@ class MySQLStatementSamples(object):
                 continue
 
             yield row
+
+            if row['timer_start'] > self._checkpoint:
+                self._checkpoint = row['timer_start']
+
             num_sent += 1
 
         if num_truncated > 0:
