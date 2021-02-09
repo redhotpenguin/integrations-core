@@ -112,6 +112,12 @@ SUB_SELECT_EVENTS_WINDOW = re.sub(r'\s+', ' ', """
     FROM {statements_table})
 """)
 
+STARTUP_TIME_SUBQUERY = re.sub(r'\s+', ' ', """
+    (SELECT UNIX_TIMESTAMP()-VARIABLE_VALUE
+    FROM {global_status_table}
+    WHERE VARIABLE_NAME='UPTIME')
+""")
+
 EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
     SELECT 
         current_schema,
@@ -119,8 +125,7 @@ EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
         digest,
         IFNULL(digest_text, sql_text) AS digest_text,
         timer_start,
-        UNIX_TIMESTAMP()-(select VARIABLE_VALUE from performance_schema.global_status
-            where VARIABLE_NAME='UPTIME')+timer_end*1e-12 as timer_end_time_s,
+        @startup_time_s+timer_end*1e-12 as timer_end_time_s,
         timer_wait / 1000 AS timer_wait_ns,
         lock_time / 1000 AS lock_time_ns,
         rows_affected,
@@ -172,6 +177,7 @@ class MySQLStatementSamples(object):
 
     def __init__(self, check, config, connection_args):
         self._check = check
+        self._version_processed = False
         self._connection_args = connection_args
         # checkpoint at zero so we pull the whole history table on the first run
         self._checkpoint = 0
@@ -259,7 +265,11 @@ class MySQLStatementSamples(object):
         for t in self._tags:
             if t.startswith('service:'):
                 self._service = t[len('service:'):]
-        self._has_window_functions = self._check.version.version_compatible((8, 0, 0))
+        if not self._version_processed and self._check.version:
+            self._has_window_functions = self._check.version.version_compatible((8, 0, 0))
+            self._global_status_table = "performance_schema.global_status" if self._check.version.version_compatible(
+                (5, 7, 0)) else "information_schema.global_status"
+            self._version_processed = True
         self._last_check_run = time.time()
         if self._run_sync or is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_RUN_SYNC', "false")):
             self._log.debug("running statement sampler synchronously")
@@ -327,6 +337,9 @@ class MySQLStatementSamples(object):
                 self._cursor_run(cursor, "set @row_num = 0")
                 self._cursor_run(cursor, "set @current_digest = ''")
                 sub_select = SUB_SELECT_EVENTS_NUMBERED
+            self._cursor_run(cursor, "set @startup_time_s = {}".format(
+                STARTUP_TIME_SUBQUERY.format(global_status_table=self._global_status_table)
+            ))
             self._cursor_run(cursor, EVENTS_STATEMENTS_QUERY.format(
                 statements_numbered=sub_select.format(statements_table=self._events_statements_temp_table)
             ), params)

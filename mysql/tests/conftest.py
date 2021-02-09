@@ -1,6 +1,7 @@
 # (C) Datadog, Inc. 2018-present
 # All rights reserved
 # Licensed under a 3-clause BSD style license (see LICENSE)
+import logging
 import os
 
 import mock
@@ -10,6 +11,8 @@ from datadog_checks.dev import TempDir, WaitFor, docker_run
 from datadog_checks.dev.conditions import CheckDockerLogs
 
 from . import common, tags
+
+logger = logging.getLogger(__name__)
 
 MYSQL_FLAVOR = os.getenv('MYSQL_FLAVOR')
 MYSQL_VERSION = os.getenv('MYSQL_VERSION')
@@ -151,9 +154,8 @@ def version_metadata():
 
 
 def _init_datadog_sample_collection(conn):
+    logger.debug("initializing datadog sample collection")
     cur = conn.cursor()
-    cur.execute(
-        "UPDATE performance_schema.setup_consumers SET enabled = 'YES' WHERE name = 'events_statements_history_long'")
     cur.execute("CREATE DATABASE datadog")
     cur.execute("GRANT CREATE TEMPORARY TABLES ON `datadog`.* TO 'dog'@'%'")
     _create_explain_procedure(conn, "datadog")
@@ -161,6 +163,7 @@ def _init_datadog_sample_collection(conn):
 
 
 def _create_explain_procedure(conn, schema):
+    logger.debug("creating explain procedure in schema=%s", schema)
     cur = conn.cursor()
     cur.execute("""
     CREATE PROCEDURE {schema}.explain_statement(IN query TEXT)
@@ -177,28 +180,35 @@ def _create_explain_procedure(conn, schema):
 
 
 def init_master():
+    logger.debug("initializing master")
     conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
     _add_dog_user(conn)
     _init_datadog_sample_collection(conn)
 
 
 def init_slave():
+    logger.debug("initializing slave")
     pymysql.connect(host=common.HOST, port=common.SLAVE_PORT, user=common.USER, passwd=common.PASS)
 
 
 def _add_dog_user(conn):
     cur = conn.cursor()
-    cur.execute("CREATE USER 'dog'@'%' IDENTIFIED BY 'dog'")
-    cur.execute("ALTER USER 'dog'@'%' WITH MAX_USER_CONNECTIONS 0")
-    if MYSQL_FLAVOR == 'mysql' and MYSQL_VERSION == '8.0':
-        cur.execute("GRANT REPLICATION CLIENT ON *.* TO 'dog'@'%'")
-    else:
-        cur.execute("GRANT REPLICATION CLIENT ON *.* TO 'dog'@'%'")
-    cur.execute("GRANT PROCESS ON *.* TO 'dog'@'%';")
+    cur.execute("SELECT count(*) FROM mysql.user WHERE User = 'dog' and Host = '%'")
+    if cur.fetchone()[0] == 0:
+        # gracefully handle retries due to partial failure later on
+        cur.execute("CREATE USER 'dog'@'%' IDENTIFIED BY 'dog'")
+    cur.execute("GRANT PROCESS ON *.* TO 'dog'@'%'")
+    cur.execute("GRANT REPLICATION CLIENT ON *.* TO 'dog'@'%'")
     cur.execute("GRANT SELECT ON performance_schema.* TO 'dog'@'%'")
+    if MYSQL_FLAVOR == 'mysql' and MYSQL_VERSION == '8.0':
+        cur.execute("ALTER USER 'dog'@'%' WITH MAX_USER_CONNECTIONS 0")
+    else:
+        cur.execute("UPDATE mysql.user SET max_user_connections = 0 WHERE user='dog' AND host='%'")
+        cur.execute("FLUSH PRIVILEGES")
 
 
 def populate_database():
+    logger.debug("populating database")
     conn = pymysql.connect(host=common.HOST, port=common.PORT, user='root')
 
     cur = conn.cursor()
