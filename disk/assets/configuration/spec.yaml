@@ -254,3 +254,4 @@ files:
                   type: string
                 - name: type
                   type: string
+                additionalProperties: true

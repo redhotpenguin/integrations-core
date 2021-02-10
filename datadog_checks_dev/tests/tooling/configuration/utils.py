@@ -4,7 +4,7 @@
 from textwrap import dedent
 
 from datadog_checks.dev.tooling.specs.configuration import ConfigSpec
-from datadog_checks.dev.tooling.specs.configuration.consumers import ExampleConsumer
+from datadog_checks.dev.tooling.specs.configuration.consumers import ExampleConsumer, ModelConsumer
 
 
 def get_spec(text, **kwargs):
@@ -16,6 +16,12 @@ def get_example_consumer(text, **kwargs):
     spec = get_spec(text, **kwargs)
     spec.load()
     return ExampleConsumer(spec.data)
+
+
+def get_model_consumer(text, **kwargs):
+    spec = get_spec(text, **kwargs)
+    spec.load()
+    return ModelConsumer(spec.data)
 
 
 def normalize_yaml(text):
