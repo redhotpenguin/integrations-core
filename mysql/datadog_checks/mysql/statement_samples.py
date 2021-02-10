@@ -155,6 +155,13 @@ EVENTS_STATEMENTS_QUERY = re.sub(r'\s+', ' ', """
     LIMIT %s
 """)
 
+ENABLED_STATEMENTS_CONSUMERS_QUERY = re.sub(r'\s+', ' ', """
+    SELECT name
+    FROM performance_schema.setup_consumers
+    WHERE enabled = 'YES'
+    AND name LIKE 'events_statements_%'
+""")
+
 PYMYSQL_NON_RETRYABLE_ERRORS = frozenset(
     {
         1044,  # access denied on database
@@ -194,8 +201,6 @@ class MySQLStatementSamples(object):
         self._enabled = is_affirmative(self._config.statement_samples_config.get('enabled', False))
         self._debug = is_affirmative(self._config.statement_samples_config.get('debug', False))
         self._run_sync = is_affirmative(self._config.statement_samples_config.get('run_sync', False))
-        self._auto_enable_events_statements_consumers = is_affirmative(
-            self._config.statement_samples_config.get('auto_enable_events_statements_consumers', False))
         self._collections_per_second = self._config.statement_samples_config.get('collections_per_second', -1)
         self._events_statements_row_limit = self._config.statement_samples_config.get('events_statements_row_limit',
                                                                                       5000)
@@ -213,24 +218,21 @@ class MySQLStatementSamples(object):
         events_statements_table = self._config.statement_samples_config.get('events_statements_table', None)
         if events_statements_table:
             if events_statements_table in DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND:
-                self._log.info("using configured events_statements_table: %s", events_statements_table)
+                self._log.debug("Configured preferred events_statements_table: %s", events_statements_table)
                 self._preferred_events_statements_tables = [events_statements_table]
             else:
                 self._log.warning(
-                    "invalid events_statements_table: %s. must be one of %s",
+                    "Invalid events_statements_table: %s. Must be one of %s. Falling back to trying all tables.",
                     events_statements_table,
                     ', '.join(DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND.keys()),
                 )
-
-        self._init_caches()
-
         self._explain_strategies = {
             'PROCEDURE': self._run_explain_procedure,
             'FQ_PROCEDURE': self._run_fully_qualified_explain_procedure,
             'STATEMENT': self._run_explain,
         }
-
         self._preferred_explain_strategies = ['PROCEDURE', 'FQ_PROCEDURE', 'STATEMENT']
+        self._init_caches()
 
     def _init_caches(self):
         self._collection_strategy_cache = TTLCache(
@@ -274,13 +276,12 @@ class MySQLStatementSamples(object):
             self._version_processed = True
         self._last_check_run = time.time()
         if self._run_sync or is_affirmative(os.environ.get('DBM_STATEMENT_SAMPLER_RUN_SYNC', "false")):
-            self._log.debug("running statement sampler synchronously")
+            self._log.debug("Running statement sampler synchronously")
             self._collect_statement_samples()
         elif self._collection_loop_future is None or not self._collection_loop_future.running():
-            self._log.info("starting mysql statement sampler")
             self._collection_loop_future = MySQLStatementSamples.executor.submit(self.collection_loop)
         else:
-            self._log.debug("mysql statement sampler already running")
+            self._log.debug("Mysql statement sampler already running")
 
     def _get_db_connection(self):
         """
@@ -292,27 +293,39 @@ class MySQLStatementSamples(object):
             self._db = pymysql.connect(**self._connection_args)
         return self._db
 
+    def close(self):
+        if self._db:
+            try:
+                self._db.close()
+            except Exception:
+                self._log.exception("Failed to close db connection")
+
     def collection_loop(self):
         try:
-            self._log.info("started mysql statement sampler collection loop")
+            self._log.info("Started statement sampler collection loop")
             while True:
                 if time.time() - self._last_check_run > self._config.min_collection_interval * 2:
-                    self._log.info("stopping mysql statement sampler collection loop due to check inactivity")
+                    self._log.info("Stopping statement sampler collection loop due to check inactivity")
                     self._check.count("dd.mysql.statement_samples.collection_loop_inactive_stop", 1, tags=self._tags)
                     break
                 self._collect_statement_samples()
         except pymysql.err.DatabaseError as e:
-            self._log.error("mysql statement sampler database error: %s", e,
+            self._log.error("Statement sampler database error: %s", e,
                             exc_info=self._log.getEffectiveLevel() == logging.DEBUG)
             self._check.count("dd.mysql.statement_samples.error", 1,
                               tags=self._tags + ["error:collection-loop-database-error-{}".format(type(e))])
         except Exception as e:
-            self._log.exception("mysql statement sampler collection loop crash")
+            self._log.exception("Statement sampler collection loop crash")
             self._check.count("dd.mysql.statement_samples.error", 1,
                               tags=self._tags + ["error:collection-loop-crash-{}".format(type(e))])
+        finally:
+            self.close()
 
-    def _cursor_run(self, cursor, query, params=None):
-        self._log.debug("running query [%s] %s", query, params)
+    def _cursor_run(self, cursor, query, params=None, obfuscated_params=None):
+        """
+        Run and log the query. If provided, obfuscated params are logged in place of the regular params.
+        """
+        self._log.debug("Running query [%s] %s", query, obfuscated_params if obfuscated_params else params)
         cursor.execute(query, params)
 
     def _get_new_events_statements(self, events_statements_table, row_limit):
@@ -347,12 +360,10 @@ class MySQLStatementSamples(object):
             ), params)
             rows = cursor.fetchall()
             self._cursor_run(cursor, drop_temp_table_query)
-            if not rows:
-                self._log.debug("no statements found in performance_schema.%s", events_statements_table)
-                return rows
-            tags = self._tags + ["table:{}".format(events_statements_table)]
+            tags = self._tags + ["events_statements_table:{}".format(events_statements_table)]
             self._check.histogram("dd.mysql.get_new_events_statements.time", (time.time() - start) * 1000, tags=tags)
             self._check.histogram("dd.mysql.get_new_events_statements.rows", len(rows), tags=tags)
+            self._log.debug("Read %s rows from %s", len(rows), events_statements_table)
             return rows
 
     def _filter_valid_statement_rows(self, rows):
@@ -361,24 +372,19 @@ class MySQLStatementSamples(object):
 
         for row in rows:
             if not row or not all(row):
-                self._log.debug('Row was unexpectedly truncated or events_statements_history_long table is not enabled')
+                self._log.debug('Row was unexpectedly truncated or the events_statements table is not enabled')
                 continue
-
             sql_text = row['sql_text']
             if not sql_text:
                 continue
-
             # The SQL_TEXT column will store 1024 chars by default. Plans cannot be captured on truncated
             # queries, so the `performance_schema_max_sql_text_length` variable must be raised.
             if sql_text[-3:] == '...':
                 num_truncated += 1
                 continue
-
             yield row
-
             if row['timer_start'] > self._checkpoint:
                 self._checkpoint = row['timer_start']
-
             num_sent += 1
 
         if num_truncated > 0:
@@ -456,25 +462,8 @@ class MySQLStatementSamples(object):
         :return:
         """
         with closing(self._get_db_connection().cursor()) as cursor:
-            self._cursor_run(cursor, "SELECT name from performance_schema.setup_consumers WHERE enabled = 'YES'")
-            enabled_consumers = set([r[0] for r in cursor.fetchall()])
-            self._log.debug("loaded enabled consumers: %s", enabled_consumers)
-            return enabled_consumers
-
-    def _performance_schema_enable_consumer(self, name):
-        query = """UPDATE performance_schema.setup_consumers SET enabled = 'YES' WHERE name = %s"""
-        with closing(self._get_db_connection().cursor()) as cursor:
-            try:
-                self._cursor_run(cursor, query, name)
-                self._log.debug('successfully enabled performance_schema consumer %s', name)
-                return True
-            except pymysql.err.DatabaseError as e:
-                if e.args[0] == 1290:
-                    # --read-only mode failure is expected so log at debug level
-                    self._log.debug('failed to enable performance_schema consumer %s: %s', name, e)
-                    return False
-                self._log.debug('failed to enable performance_schema consumer %s: %s', name, e)
-        return False
+            self._cursor_run(cursor, ENABLED_STATEMENTS_CONSUMERS_QUERY)
+            return set([r[0] for r in cursor.fetchall()])
 
     def _get_sample_collection_strategy(self):
         """
@@ -485,40 +474,45 @@ class MySQLStatementSamples(object):
         """
         cached_strategy = self._collection_strategy_cache.get("plan_collection_strategy")
         if cached_strategy:
-            self._log.debug("using cached plan_collection_strategy: %s", cached_strategy)
+            self._log.debug("Using cached plan_collection_strategy: %s", cached_strategy)
             return cached_strategy
 
         enabled_consumers = self._get_enabled_performance_schema_consumers()
+        if not enabled_consumers:
+            self._log.warning(
+                "Cannot collect statement samples as there are no enabled performance_schema.events_statements_* "
+                "consumers. Enable performance_schema and at least one events_statements consumer in order to collect "
+                "statement samples.")
+            self._check.count("dd.mysql.statement_samples.error", 1,
+                              tags=self._tags + ["error:no-enabled-events-statements-consumers"])
+            return None, None
+        self._log.debug("Found enabled performance_schema statements consumers: %s", enabled_consumers)
 
-        rate_limit = self._collections_per_second
         events_statements_table = None
         for table in self._preferred_events_statements_tables:
             if table not in enabled_consumers:
-                if not self._auto_enable_events_statements_consumers:
-                    self._log.debug("performance_schema consumer for table %s not enabled", table)
-                    continue
-                if not self._performance_schema_enable_consumer(table):
-                    continue
-                self._log.debug("successfully enabled performance_schema consumer")
+                continue
             rows = self._get_new_events_statements(table, 1)
             if not rows:
-                self._log.debug("no statements found in %s", table)
+                self._log.debug("No statements found in %s table. checking next one.", table)
                 continue
-            if rate_limit < 0:
-                rate_limit = DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND[table]
             events_statements_table = table
             break
-
         if not events_statements_table:
-            self._log.info(
-                "no valid performance_schema.events_statements table found. cannot collect statement samples.")
+            self._log.warning(
+                "Cannot collect statement samples as all enabled events_statements_consumers %s are empty.",
+                enabled_consumers)
             return None, None
+
+        rate_limit = self._collections_per_second
+        if rate_limit < 0:
+            rate_limit = DEFAULT_EVENTS_STATEMENTS_COLLECTIONS_PER_SECOND[events_statements_table]
 
         # cache only successful strategies
         # should be short enough that we'll reflect updates relatively quickly
         # i.e., an aurora replica becomes a master (or vice versa).
         strategy = (events_statements_table, rate_limit)
-        self._log.debug("chosen plan collection strategy: events_statements_table=%s, rate_limit=%s",
+        self._log.debug("Chose plan collection strategy: events_statements_table=%s, collections_per_second=%s",
                         events_statements_table, rate_limit)
         self._collection_strategy_cache["plan_collection_strategy"] = strategy
         return strategy
@@ -534,9 +528,11 @@ class MySQLStatementSamples(object):
 
         start_time = time.time()
         tags = self._tags + ["events_statements_table:{}".format(events_statements_table)]
+
         rows = self._get_new_events_statements(events_statements_table, self._events_statements_row_limit)
         events = self._collect_plans_for_statements(rows)
         submitted_count = statement_samples_client.submit_events(events)
+
         self._check.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000, tags=tags)
         self._check.count("dd.mysql.collect_statement_samples.events_submitted.count",
                           submitted_count, tags=tags)
@@ -555,7 +551,7 @@ class MySQLStatementSamples(object):
             except Exception as e:
                 self._check.count("dd.mysql.statement_samples.error", 1,
                                   tags=self._tags + ["error:explain-{}".format(type(e))])
-                self._log.exception("failed to run explain on query %s", obfuscated_statement)
+                self._log.exception("Failed to run explain on query %s", obfuscated_statement)
 
     def _explain_statement(self, cursor, statement, schema, obfuscated_statement):
         """
@@ -608,7 +604,7 @@ class MySQLStatementSamples(object):
                     self._log.debug('skipping PROCEDURE strategy as there is no default schema for this statement="%s"',
                                     obfuscated_statement)
                     continue
-                plan = self._explain_strategies[strategy](cursor, statement)
+                plan = self._explain_strategies[strategy](cursor, statement, obfuscated_statement)
                 if plan:
                     self._collection_strategy_cache[strategy_cache_key] = strategy
                     self._log.debug(
@@ -629,25 +625,27 @@ class MySQLStatementSamples(object):
                 continue
         return None
 
-    def _run_explain(self, cursor, statement):
+    def _run_explain(self, cursor, statement, obfuscated_statement):
         """
         Run the explain using the EXPLAIN statement
         """
-        self._cursor_run(cursor, 'EXPLAIN FORMAT=json {}'.format(statement))
+        self._log.debug("running query [EXPLAIN FORMAT=json %s]", obfuscated_statement)
+        cursor.execute('EXPLAIN FORMAT=json {}'.format(statement))
         return cursor.fetchone()[0]
 
-    def _run_explain_procedure(self, cursor, statement):
+    def _run_explain_procedure(self, cursor, statement, obfuscated_statement):
         """
         Run the explain by calling the stored procedure if available.
         """
-        self._cursor_run(cursor, 'CALL {}(%s)'.format(self._explain_procedure), statement)
+        self._cursor_run(cursor, 'CALL {}(%s)'.format(self._explain_procedure), statement, obfuscated_statement)
         return cursor.fetchone()[0]
 
-    def _run_fully_qualified_explain_procedure(self, cursor, statement):
+    def _run_fully_qualified_explain_procedure(self, cursor, statement, obfuscated_statement):
         """
         Run the explain by calling the fully qualified stored procedure if available.
         """
-        self._cursor_run(cursor, 'CALL {}(%s)'.format(self._fully_qualified_explain_procedure), statement)
+        self._cursor_run(cursor, 'CALL {}(%s)'.format(self._fully_qualified_explain_procedure), statement,
+                         obfuscated_statement)
         return cursor.fetchone()[0]
 
     @staticmethod
