@@ -383,6 +383,8 @@ class MySQLStatementSamples(object):
                 num_truncated += 1
                 continue
             yield row
+            # only save the checkpoint for rows that we have successfully processed
+            # else rows that we ignore can push the checkpoint forward causing us to miss some on the next run
             if row['timer_start'] > self._checkpoint:
                 self._checkpoint = row['timer_start']
             num_sent += 1
@@ -397,7 +399,7 @@ class MySQLStatementSamples(object):
             self._check.count("dd.mysql.statement_samples.error", 1, tags=self._tags + ["error:truncated-sql-text"])
 
     def _collect_plans_for_statements(self, rows):
-        for row in self._filter_valid_statement_rows(rows):
+        for row in rows:
             # Plans have several important signatures to tag events with:
             # - `plan_signature` - hash computed from the normalized JSON plan to group identical plan trees
             # - `resource_hash` - hash computed off the raw sql text to match apm resources
@@ -413,10 +415,10 @@ class MySQLStatementSamples(object):
             query_signature = compute_sql_signature(datadog_agent.obfuscate_sql(row['digest_text']))
             apm_resource_hash = compute_sql_signature(obfuscated_statement)
 
-            cache_key = (row['current_schema'], query_signature)
-            if cache_key in self._explained_statements_cache:
+            query_cache_key = (row['current_schema'], query_signature)
+            if query_cache_key in self._explained_statements_cache:
                 continue
-            self._explained_statements_cache[cache_key] = True
+            self._explained_statements_cache[query_cache_key] = True
 
             normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None
             plan = self._explain_statement_safe(row['sql_text'], row['current_schema'], obfuscated_statement)
@@ -426,9 +428,9 @@ class MySQLStatementSamples(object):
                 plan_signature = compute_exec_plan_signature(normalized_plan)
                 plan_cost = self._parse_execution_plan_cost(plan)
 
-            statement_plan_sig = (query_signature, plan_signature)
-            if statement_plan_sig not in self._seen_samples_cache:
-                self._seen_samples_cache[statement_plan_sig] = True
+            query_plan_cache_key = (query_cache_key, plan_signature)
+            if query_plan_cache_key not in self._seen_samples_cache:
+                self._seen_samples_cache[query_plan_cache_key] = True
                 yield {
                     "timestamp": row["timer_end_time_s"] * 1000,
                     "host": self._db_hostname,
@@ -530,6 +532,7 @@ class MySQLStatementSamples(object):
         tags = self._tags + ["events_statements_table:{}".format(events_statements_table)]
 
         rows = self._get_new_events_statements(events_statements_table, self._events_statements_row_limit)
+        rows = self._filter_valid_statement_rows(rows)
         events = self._collect_plans_for_statements(rows)
         submitted_count = statement_samples_client.submit_events(events)
 
