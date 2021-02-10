@@ -248,8 +248,8 @@ class MySQLStatementSamples(object):
 
         # seen_samples_cache: limit the ingestion rate per (query_signature, plan_signature)
         self._seen_samples_cache = TTLCache(
-            # assuming ~60 bytes per entry (query & plan signature, key hash, 4 pointers (ordered dict), expiry time)
-            # total size: 10k * 60 = 0.6 Mb
+            # assuming ~100 bytes per entry (query & plan signature, key hash, 4 pointers (ordered dict), expiry time)
+            # total size: 10k * 100 = 1 Mb
             maxsize=self._config.statement_samples_config.get('seen_samples_cache_maxsize', 10000),
             ttl=60 * 60 / self._config.statement_samples_config.get('samples_per_hour_per_query', 15)
         )
@@ -398,64 +398,82 @@ class MySQLStatementSamples(object):
             )
             self._check.count("dd.mysql.statement_samples.error", 1, tags=self._tags + ["error:truncated-sql-text"])
 
+    def _collect_plan_for_statement(self, row):
+        # Plans have several important signatures to tag events with:
+        # - `plan_signature` - hash computed from the normalized JSON plan to group identical plan trees
+        # - `resource_hash` - hash computed off the raw sql text to match apm resources
+        # - `query_signature` - hash computed from the digest text to match query metrics
+
+        try:
+            obfuscated_statement = datadog_agent.obfuscate_sql(row['sql_text'])
+            obfuscated_digest_text = datadog_agent.obfuscate_sql(row['digest_text'])
+        except Exception:
+            # do not log the sql_text to avoid leaking sensitive data into logs
+            self._log.debug("Failed to obfuscate statement: %s", row['digest_text'])
+            self._check.count("dd.mysql.statement_samples.error", 1, tags=self._tags + ["error:sql-obfuscate"])
+            return None
+
+        apm_resource_hash = compute_sql_signature(obfuscated_statement)
+        query_signature = compute_sql_signature(obfuscated_digest_text)
+
+        query_cache_key = (row['current_schema'], query_signature)
+        if query_cache_key in self._explained_statements_cache:
+            return None
+        self._explained_statements_cache[query_cache_key] = True
+
+        plan = None
+        with closing(self._get_db_connection().cursor()) as cursor:
+            try:
+                plan = self._explain_statement(cursor, row['sql_text'], row['current_schema'], obfuscated_statement)
+            except Exception as e:
+                self._check.count("dd.mysql.statement_samples.error", 1,
+                                  tags=self._tags + ["error:explain-{}".format(type(e))])
+                self._log.exception("Failed to explain statement: %s", obfuscated_statement)
+
+        normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None
+        if plan:
+            normalized_plan = datadog_agent.obfuscate_sql_exec_plan(plan, normalize=True) if plan else None
+            obfuscated_plan = datadog_agent.obfuscate_sql_exec_plan(plan)
+            plan_signature = compute_exec_plan_signature(normalized_plan)
+            plan_cost = self._parse_execution_plan_cost(plan)
+
+        query_plan_cache_key = (query_cache_key, plan_signature)
+        if query_plan_cache_key not in self._seen_samples_cache:
+            self._seen_samples_cache[query_plan_cache_key] = True
+            return {
+                "timestamp": row["timer_end_time_s"] * 1000,
+                "host": self._db_hostname,
+                "service": self._service,
+                "ddsource": "mysql",
+                "ddtags": self._tags_str,
+                "duration": row['timer_wait_ns'],
+                "network": {
+                    "client": {
+                        "ip": row.get('processlist_host', None),
+                    }
+                },
+                "db": {
+                    "instance": row['current_schema'],
+                    "plan": {
+                        "definition": obfuscated_plan,
+                        "cost": plan_cost,
+                        "signature": plan_signature
+                    },
+                    "query_signature": query_signature,
+                    "resource_hash": apm_resource_hash,
+                    "statement": obfuscated_statement
+                },
+                'mysql': {k: v for k, v in row.items() if k not in EVENTS_STATEMENTS_SAMPLE_EXCLUDE_KEYS},
+            }
+
     def _collect_plans_for_statements(self, rows):
         for row in rows:
-            # Plans have several important signatures to tag events with:
-            # - `plan_signature` - hash computed from the normalized JSON plan to group identical plan trees
-            # - `resource_hash` - hash computed off the raw sql text to match apm resources
-            # - `query_signature` - hash computed from the digest text to match query metrics
-
             try:
-                obfuscated_statement = datadog_agent.obfuscate_sql(row['sql_text'])
+                event = self._collect_plan_for_statement(row)
+                if event:
+                    yield event
             except Exception:
-                self._log.debug("failed to obfuscate statement: %s", row['sql_text'])
-                self._check.count("dd.mysql.statement_samples.error", 1, tags=self._tags + ["error:sql-obfuscate"])
-                continue
-
-            query_signature = compute_sql_signature(datadog_agent.obfuscate_sql(row['digest_text']))
-            apm_resource_hash = compute_sql_signature(obfuscated_statement)
-
-            query_cache_key = (row['current_schema'], query_signature)
-            if query_cache_key in self._explained_statements_cache:
-                continue
-            self._explained_statements_cache[query_cache_key] = True
-
-            normalized_plan, obfuscated_plan, plan_signature, plan_cost = None, None, None, None
-            plan = self._explain_statement_safe(row['sql_text'], row['current_schema'], obfuscated_statement)
-            if plan:
-                normalized_plan = datadog_agent.obfuscate_sql_exec_plan(plan, normalize=True) if plan else None
-                obfuscated_plan = datadog_agent.obfuscate_sql_exec_plan(plan)
-                plan_signature = compute_exec_plan_signature(normalized_plan)
-                plan_cost = self._parse_execution_plan_cost(plan)
-
-            query_plan_cache_key = (query_cache_key, plan_signature)
-            if query_plan_cache_key not in self._seen_samples_cache:
-                self._seen_samples_cache[query_plan_cache_key] = True
-                yield {
-                    "timestamp": row["timer_end_time_s"] * 1000,
-                    "host": self._db_hostname,
-                    "service": self._service,
-                    "ddsource": "mysql",
-                    "ddtags": self._tags_str,
-                    "duration": row['timer_wait_ns'],
-                    "network": {
-                        "client": {
-                            "ip": row.get('processlist_host', None),
-                        }
-                    },
-                    "db": {
-                        "instance": row['current_schema'],
-                        "plan": {
-                            "definition": obfuscated_plan,
-                            "cost": plan_cost,
-                            "signature": plan_signature
-                        },
-                        "query_signature": query_signature,
-                        "resource_hash": apm_resource_hash,
-                        "statement": obfuscated_statement
-                    },
-                    'mysql': {k: v for k, v in row.items() if k not in EVENTS_STATEMENTS_SAMPLE_EXCLUDE_KEYS},
-                }
+                self._log.debug("Failed to collect plan for statement", exc_info=1)
 
     def _get_enabled_performance_schema_consumers(self):
         """
@@ -537,24 +555,11 @@ class MySQLStatementSamples(object):
         submitted_count = statement_samples_client.submit_events(events)
 
         self._check.histogram("dd.mysql.collect_statement_samples.time", (time.time() - start_time) * 1000, tags=tags)
-        self._check.count("dd.mysql.collect_statement_samples.events_submitted.count",
-                          submitted_count, tags=tags)
+        self._check.count("dd.mysql.collect_statement_samples.events_submitted.count", submitted_count, tags=tags)
         self._check.gauge("dd.mysql.collect_statement_samples.seen_samples_cache.len", len(self._seen_samples_cache),
                           tags=tags)
         self._check.gauge("dd.mysql.collect_statement_samples.explained_statements_cache.len",
                           len(self._explained_statements_cache), tags=tags)
-
-    def _explain_statement_safe(self, sql_text, schema, obfuscated_statement):
-        start_time = time.time()
-        with closing(self._get_db_connection().cursor()) as cursor:
-            try:
-                plan = self._explain_statement(cursor, sql_text, schema, obfuscated_statement)
-                self._check.histogram("dd.mysql.run_explain.time", (time.time() - start_time) * 1000, tags=self._tags)
-                return plan
-            except Exception as e:
-                self._check.count("dd.mysql.statement_samples.error", 1,
-                                  tags=self._tags + ["error:explain-{}".format(type(e))])
-                self._log.exception("Failed to run explain on query %s", obfuscated_statement)
 
     def _explain_statement(self, cursor, statement, schema, obfuscated_statement):
         """
@@ -562,13 +567,14 @@ class MySQLStatementSamples(object):
         error occurs (such as a permissions error), then statements executed under the schema will be
         disallowed in future attempts.
         """
+        start_time = time.time()
         strategy_cache_key = 'explain_strategy:%s' % schema
         explain_strategy_error = 'ERROR'
         tags = self._tags + ["schema:{}".format(schema)]
 
         self._log.debug('explaining statement. schema=%s, statement="%s"', schema, statement)
 
-        if not self._can_explain(statement):
+        if not self._can_explain(obfuscated_statement):
             self._log.debug('Skipping statement which cannot be explained: %s', obfuscated_statement)
             return None
 
@@ -613,6 +619,8 @@ class MySQLStatementSamples(object):
                     self._log.debug(
                         'Successfully collected execution plan. strategy=%s, schema=%s, statement="%s", plan="%s"',
                         strategy, schema, obfuscated_statement, plan)
+                    self._check.histogram("dd.mysql.run_explain.time", (time.time() - start_time) * 1000,
+                                          tags=self._tags + ["strategy:{}".format(strategy)])
                     return plan
             except pymysql.err.DatabaseError as e:
                 if len(e.args) != 2:
@@ -652,9 +660,8 @@ class MySQLStatementSamples(object):
         return cursor.fetchone()[0]
 
     @staticmethod
-    def _can_explain(statement):
-        # TODO: cleaner query cleaning to strip comments, etc.
-        return statement.strip().split(' ', 1)[0].lower() in VALID_EXPLAIN_STATEMENTS
+    def _can_explain(obfuscated_statement):
+        return obfuscated_statement.split(maxsplit=1)[0].lower() in VALID_EXPLAIN_STATEMENTS
 
     @staticmethod
     def _parse_execution_plan_cost(execution_plan):
