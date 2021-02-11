@@ -268,8 +268,14 @@ def test_statement_metrics(aggregator, integration_check, pg_instance):
         aggregator.assert_metric(name, count=1, tags=expected_tags)
 
 
+def connect_bob_to_pg():
+    return psycopg2.connect(host=HOST, dbname=DB_NAME, user="bob", password="bob")
+
+
+# TODO: test parameterized query and that can't see params in pg_stat_activity no plan collected
+
 @pytest.mark.parametrize("pg_stat_activity_view", ["pg_stat_activity", "datadog.pg_stat_activity()"])
-def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view):
+def test_statement_samples_collect(integration_check, pg_instance, pg_stat_activity_view):
     pg_instance['deep_database_monitoring'] = True
     pg_instance['pg_stat_activity_view'] = pg_stat_activity_view
     pg_instance['statement_samples'] = {'enabled': True, 'run_sync': True}
@@ -278,19 +284,31 @@ def test_statement_samples(integration_check, pg_instance, pg_stat_activity_view
     # clear out any samples kept from previous runs
     statement_samples_client._events = []
 
+    db = connect_bob_to_pg()
+    cursor = db.cursor()
+    cursor.execute("select city from persons")
+
     check.check(pg_instance)
 
     # check for the one query we are certain to collect a sample for as it is the query that the check itself makes
     # to collect samples
     def _matches_query(query):
         s = re.sub(r'\s+', ' ', query or '').strip()
-        return s.startswith("SELECT * FROM {} WHERE datname = 'datadog_test'".format(pg_stat_activity_view))
+        return s.startswith("select city from persons".format(pg_stat_activity_view))
 
     matching = [e for e in statement_samples_client._events if _matches_query(e['db']['statement'])]
+
+    if POSTGRES_VERSION.split('.')[0] == "9" and pg_stat_activity_view == "pg_stat_activity":
+        # we don't expect to catch any samples because there is no pg_monitor role before version 10
+        return
+
     assert len(matching) > 0, "should have collected an event"
     event = matching[0]
     assert event['db']['plan']['definition'] is not None, "missing execution plan"
     assert 'Plan' in json.loads(event['db']['plan']['definition']), "invalid json execution plan"
+
+    cursor.close()
+    db.close()
 
 
 def test_statement_samples_collection_loop_inactive_stop(aggregator, integration_check, pg_instance):

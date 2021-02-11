@@ -11,6 +11,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" datadog_test <<-EOSQL
     SELECT * FROM persons;
     SELECT * FROM persons;
     SELECT * FROM persons;
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO bob;
 EOSQL
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" dogs <<-EOSQL

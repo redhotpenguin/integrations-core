@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# pg_monitor is only available on 10+
+if [[ !("$PG_MAJOR" == 9.* ) ]]; then
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" datadog_test <<-'EOSQL'
+    GRANT pg_monitor TO datadog;
+EOSQL
+fi
+
 # setup extensions & functions required for collection of statement metrics & samples
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" datadog_test <<-'EOSQL'
     CREATE EXTENSION pg_stat_statements SCHEMA public;

@@ -216,8 +216,8 @@ class PostgresStatementSamples(object):
 
             try:
                 obfuscated_statement = datadog_agent.obfuscate_sql(original_statement)
-            except Exception:
-                self._log.debug("failed to obfuscate statement: %s", original_statement)
+            except Exception as e:
+                self._log.debug("failed to obfuscate statement: %s", e)
                 self._check.count("dd.postgres.statement_samples.error", 1, tags=self._tags + ["error:sql-obfuscate"])
                 continue
 
